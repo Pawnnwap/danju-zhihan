@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>丹橘知旱 · 丹江口库区柑橘园气候决策助手</title>
+<meta name="description" content="面向丹江口库区柑橘果农的气候风险决策助手：物候期识别、四类气象风险提示、农事建议与问答。AI4Climate 参赛项目。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <div class="brand">
+      <span class="logo">🍊</span>
+      <div>
+        <h1>丹橘知旱</h1>
+        <p class="sub">丹江口库区柑橘园气候决策助手 <span class="tagline">One Place · One Climate Problem · One AI Solution</span></p>
+      </div>
+    </div>
+    <p class="disclaimer">风险等级用于辅助安排农事，不构成灾害预警，不替代官方气象预警与专业农技指导。</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card" id="site-card">
+    <h2>① 选择园块</h2>
+    <div class="sites" id="site-list"></div>
+    <div class="custom-site">
+      <label>自定义坐标（北纬, 东经）：
+        <input id="lat" type="number" step="0.001" min="30" max="34" value="32.54">
+        <input id="lon" type="number" step="0.001" min="109" max="113" value="111.51">
+        <button id="use-custom" class="btn">使用</button>
+      </label>
+      <span class="hint">预置坐标为乡镇中心近似值，精确园块可输入自定坐标</span>
+    </div>
+  </section>
+
+  <section class="card" id="now-card">
+    <h2>② 当前物候与风险看板</h2>
+    <div id="phenology-now" class="phenology">加载中…</div>
+    <div id="risk-now" class="risk-grid"></div>
+  </section>
+
+  <section class="card" id="timeline-card">
+    <h2>③ 近 90 天风险日历（含未来 7 天预报）</h2>
+    <div id="timeline" class="timeline"></div>
+    <p class="hint">红/橙/黄/蓝 = 重/中/轻/关注；灰 = 无风险。鼠标悬停查看当日详情。</p>
+  </section>
+
+  <section class="card" id="advice-card">
+    <h2>④ 农事建议</h2>
+    <div id="advice" class="advice">加载中…</div>
+    <div class="export-row">
+      <button id="export-report" class="btn">⬇ 导出建议报告（HTML，可打印/另存 Word）</button>
+      <button id="export-csv" class="btn">⬇ 导出 97 天风险日历（CSV）</button>
+      <span class="hint">报告含当前物候、四类风险、建议与数据来源，可直接存档或与农技员沟通。</span>
+    </div>
+  </section>
+
+  <section class="card" id="replay-card">
+    <h2>⑤ 历史回放</h2>
+    <div class="replay-btns">
+      <button class="btn" data-replay="2022-heat">2022 年夏季热害回放（竹山 44.6℃ 同期）</button>
+      <button class="btn" data-replay="2025-autumn">2025 年秋汛连阴雨回放</button>
+      <button class="btn" data-replay="2021-winter">2021 年初冬寒潮冻害回放</button>
+    </div>
+    <div id="replay-result"></div>
+  </section>
+
+  <section class="card" id="qa-card">
+    <h2>⑥ 问答助手</h2>
+    <div class="qa-box">
+      <textarea id="q" rows="2" placeholder="例如：现在要不要灌水？花期遇到低温怎么办？"></textarea>
+      <button id="ask" class="btn primary">提问</button>
+    </div>
+    <div id="a" class="answer"></div>
+    <details class="key-note">
+      <summary>AI 设置（可选）：接入 DeepSeek 大模型</summary>
+      <p>本助手内置基于农技规则的确定性建议引擎；如需大模型生成个性化解释，可填入你自己的
+        <a href="https://platform.deepseek.com/" target="_blank" rel="noopener">DeepSeek API Key</a>
+        （仅保存在本机浏览器 localStorage，不回传服务器）。</p>
+      <input id="api-key" type="password" placeholder="sk-...">
+      <button id="save-key" class="btn">保存 Key</button>
+      <span id="key-status"></span>
+    </details>
+  </section>
+</main>
+
+<footer class="wrap foot">
+  <p>丹橘知旱 · AI4Climate 全球青年气候解决方案挑战赛参赛项目 · 团队 沧浪舟 · 开放选题 / 气候适应与韧性</p>
+  <p>数据来源：<a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo（ERA5-Land 再分析与 ECMWF 预报）</a> ·
+     规则来源：湖北省农业农村厅《湖北柑橘抗高温干旱及灾后恢复技术措施》等公开农技资料 ·
+     <a href="https://deepseek.club/topic/5043" target="_blank" rel="noopener">社区作品帖</a> ·
+     <a href="docs/01-项目说明.md" target="_blank" rel="noopener">项目文档</a></p>
+</footer>
+
+<script src="phenology.js?v=2"></script>
+<script src="app.js?v=2"></script>
+</body>
+</html>
