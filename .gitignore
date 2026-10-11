@@ -1,0 +1,5 @@
+docs/frames/
+__pycache__/
+*.pyc
+docs/04-同侪帖学习与改进.md
+pre/
