@@ -3,6 +3,9 @@
 // 引擎：phenology.js 中的物候与规则库（确定性计算）；LLM 仅做解释层（可选）
 
 const $ = (id) => document.getElementById(id);
+// 所有外部/用户文本进 innerHTML 前一律转义（大模型输出与用户提问都是不可信内容，评审 A-Q4）
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const LEVEL_COLOR = { "重": "var(--red)", "中": "var(--orange)", "轻": "var(--yellow)", "关注": "var(--blue)", "无": "var(--gray)" };
 const RISK_NAME = { heat: "高温热害", drought: "干旱", cold: "花期/幼果低温", freeze: "越冬冻害" };
 const RISK_SHORT = { heat: "高温", drought: "干旱", cold: "低温", freeze: "冻害" };
@@ -11,14 +14,42 @@ let currentSite = SITES[0];
 
 // ---------- 数据获取 ----------
 // Archive API 有约 2~5 天滞后；Forecast API 覆盖今天起 16 天。两者拼接保证"今天"有值。
+// 外部依赖只有一个（Open-Meteo），故对它做显式超时+一次重试+返回契约校验（评审 A-Q8）：
+// 无密钥时无法用配额换可靠性，至少要失败得可见、可归因，而不是静默半张图。
+async function httpJson(url, timeoutMs = 12000, tries = 2) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: ctl.signal });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return await res.json();
+    } catch (e) {
+      lastErr = e.name === "AbortError" ? `超时（${timeoutMs / 1000}s）` : e.message;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error(lastErr || "请求失败");
+}
+
+function pickDaily(j, vars) {
+  // 返回契约校验：字段缺失/长度不齐即显式报错，不让 undefined 静默变成等级
+  const d = j && j.daily;
+  if (!d || !Array.isArray(d.time)) throw new Error("数据格式不符（缺少 daily.time）");
+  for (const v of vars) {
+    if (!Array.isArray(d[v])) throw new Error(`数据格式不符（缺少 ${v}）`);
+    if (d[v].length !== d.time.length) throw new Error(`数据格式不符（${v} 长度不齐）`);
+  }
+  return d;
+}
+
 async function fetchArchive(lat, lon, startDate, endDate) {
   const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}` +
     `&start_date=${startDate}&end_date=${endDate}` +
     `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Asia%2FShanghai`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("历史数据获取失败 HTTP " + res.status);
-  const j = await res.json();
-  const d = j.daily;
+  const d = pickDaily(await httpJson(url), ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"]);
   return d.time.map((t, i) => ({
     date: t,
     tmax: d.temperature_2m_max[i],
@@ -32,10 +63,7 @@ async function fetchForecast(lat, lon) {
   // （空洞会使 streak 跨洞累积、rain30 窗口被拉长——评审发现的工程缺陷）
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
     `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&past_days=6&forecast_days=16&timezone=Asia%2FShanghai`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("预报获取失败 HTTP " + res.status);
-  const j = await res.json();
-  const d = j.daily;
+  const d = pickDaily(await httpJson(url), ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"]);
   return d.time.map((t, i) => ({
     date: t,
     tmax: d.temperature_2m_max[i],
@@ -74,7 +102,7 @@ function assess(days) {
       rain30 += (days[j].pr || 0);
       windowDays++;
     }
-    let rain7 = 0;
+    let rain7 = 0;  // 近 7 天累计降水：当前规则未使用，保留供 ET0/水分盈亏口径校准时复用
     for (let j = i; j >= 0; j--) {
       if ((date - parseDay(days[j].date)) / 86400000 > 6) break;
       rain7 += (days[j].pr || 0);
@@ -111,9 +139,10 @@ function renderSites() {
   };
 }
 
-function renderPhenology(today) {
+function renderPhenology(today, note = "") {
   $("phenology-now").innerHTML =
-    `当前物候：<b>${today.pheno.name}</b>（${today.pheno.note}）｜园块：<b>${currentSite.name}</b>｜数据日期：<b>${today.date}${today.forecast ? "（预报）" : ""}</b>`;
+    `当前物候：<b>${today.pheno.name}</b>（${today.pheno.note}）｜园块：<b>${esc(currentSite.name)}</b>｜数据日期：<b>${today.date}${today.forecast ? "（预报）" : ""}</b>` +
+    (note ? `<br><span class="err">⚠️ ${esc(note)}</span>` : "");
 }
 
 function renderRisks(today) {
@@ -137,7 +166,7 @@ function renderTimeline(all) {
       (w ? `｜${RISK_SHORT[w.id]}·${w.level}` : "｜无风险") +
       `｜最高 ${d.tmax ?? "—"}℃ / 最低 ${d.tmin ?? "—"}℃ / 降水 ${d.pr ?? "—"}mm`;
     const mark = (i === 0 || d.date.endsWith("-01")) ? "月分界" : "";
-    return `<div class="day ${mark}" style="background:${color}" data-tip="${tip}"></div>`;
+    return `<div class="day ${mark}" style="background:${color}" data-tip="${esc(tip)}"></div>`;
   }).join("");
 }
 
@@ -205,26 +234,32 @@ async function runReplay(kind) {
     }
     const worst = assessed.map(d => ({ d, w: worstRisk(d.risks) })).filter(x => x.w);
     // 优先展示"重"级事件（按日期），无重级时展示末尾事件
-    const LV_RANK = { "重": 0, "中": 1, "轻": 2, "关注": 3 };
     const topList = worst.filter(x => x.w.level === "重").length >= 3
       ? worst.filter(x => x.w.level === "重").slice(0, 5)
       : worst.slice(-5);
-    const top = topList.map(x => `<li>${x.d.date}｜${RISK_NAME[x.w.id]}·${x.w.level}：${x.w.why}</li>`).join("");
+    const top = topList.map(x => `<li>${x.d.date}｜${RISK_NAME[x.w.id]}·${x.w.level}：${esc(x.w.why)}</li>`).join("");
     box.innerHTML = `<div>${stats}</div><p class="hint">若当时使用本工具，主要提示为：</p><ul style="padding-left:20px">${top}</ul>
-      <p class="hint">回测说明：风险等级由当日与前 30 天数据按规则引擎复算，供检验提示时效，非事后拟合。</p>`;
+      <p class="hint">回测说明：风险等级由当日与前 30 天数据按规则引擎复算，供检验提示时效，非事后拟合。"重"级由单日阈值还是连续日数升级触发，见 tools/backtest.py 输出的逐项归因。</p>`;
   } catch (err) {
-    box.innerHTML = `<p class="answer err">回放失败：${err.message}</p>`;
+    box.innerHTML = `<p class="answer err">回放失败：${esc(err.message)}</p>`;
   }
 }
 
 // ---------- 问答 ----------
 function buildContext() {
   const t = window.__today;
+  const all = window.__recent || [];
+  const d7 = (x) => ({ date: x.date, tmax: x.tmax, tmin: x.tmin, pr: x.pr });
   return JSON.stringify({
     site: currentSite.name,
     today: { date: t.date, pheno: t.pheno.name, tmax: t.tmax, tmin: t.tmin,
       risks: Object.fromEntries(Object.entries(t.risks).map(([k, v]) => [k, v ? v.level : null])) },
-    recent7: (window.__recent || []).slice(-7).map(d => ({ date: d.date, tmax: d.tmax, tmin: d.tmin, pr: d.pr })),
+    recent7: all.filter(x => !x.forecast).slice(-7).map(d7),
+    // 未来 7 天预报与引擎等级一并给出（评审 A-Q4：原上下文只有历史数据，
+    // 果农问"接下来几天怎么办"时模型只能凭空生成）
+    forecast7: all.filter(x => x.forecast && x.date >= t.date).slice(0, 7)
+      .map(x => ({ ...d7(x), risks: Object.fromEntries(Object.entries(x.risks).map(([k, v]) => [k, v ? v.level : null])) })),
+    rule: "风险等级与数值一律引用本上下文，不得自行判定新等级、不得预测新数值；上下文缺失时直说不知道。",
   });
 }
 
@@ -252,7 +287,7 @@ function ruleAnswer(q) {
 async function askLLM(q) {
   const key = localStorage.getItem("deepseek_key");
   if (!key) return null;
-  const sys = `你是丹江口库区柑橘园气候决策助手"丹橘知旱"。只用给定数据与湖北省公开农技规则回答果农问题，给出可执行动作；必须引用数据日期；若数据不足以判断，明确说明并建议咨询当地农技部门。数据上下文：${buildContext()}`;
+  const sys = `你是丹江口库区柑橘园气候决策助手"丹橘知旱"。只用给定数据与湖北省公开农技规则回答果农问题，给出可执行动作；必须引用数据日期；风险等级与数值只能原样引用上下文，不得自行判定等级或预测新数值；数据不足以判断时明确说明并建议咨询当地农技部门。数据上下文：${buildContext()}`;
   const res = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
@@ -290,9 +325,9 @@ async function onAsk() {
         ? `（内置规则引擎生成；大模型层未接通${failNote}）`
         : "（内置规则引擎生成；如需个性化解释可在下方设置中接入 DeepSeek Key）";
     }
-    box.innerHTML = `<b>问：${q}</b>\n${ans}\n<span class="cite">${mode} 风险等级不构成灾害预警。</span>`;
+    box.innerHTML = `<b>问：${esc(q)}</b>\n${esc(ans)}\n<span class="cite">${esc(mode)} 风险等级不构成灾害预警。</span>`;
   } catch (e) {
-    box.innerHTML = `<p class="err">出错了：${e.message}</p>`;
+    box.innerHTML = `<p class="err">出错了：${esc(e.message)}</p>`;
   }
   $("ask").disabled = false;
 }
@@ -364,41 +399,47 @@ function localDayStr(offsetDays = 0) {
 }
   const start = localDayStr(-100);
   const archEnd = localDayStr(-6);
-  try {
-    const past = await fetchArchive(lat, lon, start, archEnd);
-    let forecast = [];
-    try { forecast = await fetchForecast(lat, lon); } catch (e) { forecast = []; }
-    const all = assess(mergeSeries(past, forecast));
-    // 远期预报不确定性封顶：ECMWF 第 8 天起逐日温度误差 ±2-3℃（阈值间隔才 2℃），
-    // 8 天外的中/重级一律压为"关注"，避免"掷骰子"式色块（评审意见）
-    const todayStr0 = localDayStr(0);
-    for (const d of all) {
-      if (!d.forecast) continue;
-      const lead = (parseDay(d.date) - parseDay(todayStr0)) / 86400000;
-      if (lead >= 8) {
-        for (const k of Object.keys(d.risks)) {
-          if (d.risks[k]) {
-            // 统一改写依据文本：不再保留与被封顶等级矛盾的触发描述（评审 Q6）
-            d.risks[k] = {
-              level: "关注",
-              why: `${RISK_NAME[k]}模式值：最高 ${d.tmax ?? "—"}℃ / 最低 ${d.tmin ?? "—"}℃（预报时效 ${Math.round(lead)} 天，误差可达 ±2-3℃，仅作过程示意，不构成动作依据）`
-            };
-          }
+  // 任一侧数据失败都单独降级、并把原因显示出来（评审 A-Q8：原实现 archive 一挂就整盘空白）
+  let past = [], forecast = [], archErr = null, fcErr = null;
+  try { past = await fetchArchive(lat, lon, start, archEnd); } catch (e) { archErr = e.message; }
+  try { forecast = await fetchForecast(lat, lon); } catch (e) { fcErr = e.message; }
+  if (!past.length && !forecast.length) {
+    $("phenology-now").innerHTML =
+      `<span class="loading">数据加载失败：历史序列「${esc(archErr)}」／预报序列「${esc(fcErr)}」——可切换园块或稍后重试</span>`;
+    return;
+  }
+  const degraded = [
+    archErr && !past.length ? `历史数据不可用（${archErr}），现仅显示预报序列，干旱暂不判级` : null,
+    fcErr && !forecast.length ? `预报数据不可用（${fcErr}），今日与未来提示暂缺，仅显示历史再分析` : null,
+  ].filter(Boolean).join("；");
+  const all = assess(mergeSeries(past, forecast));
+  // 远期预报不确定性封顶：ECMWF 第 8 天起逐日温度误差 ±2-3℃（阈值间隔才 2℃），
+  // 8 天外的中/重级一律压为"关注"，避免"掷骰子"式色块（评审意见）
+  const todayStr0 = localDayStr(0);
+  for (const d of all) {
+    if (!d.forecast) continue;
+    const lead = (parseDay(d.date) - parseDay(todayStr0)) / 86400000;
+    if (lead >= 8) {
+      for (const k of Object.keys(d.risks)) {
+        if (d.risks[k]) {
+          // 统一改写依据文本：不再保留与被封顶等级矛盾的触发描述（评审 Q6）
+          d.risks[k] = {
+            level: "关注",
+            why: `${RISK_NAME[k]}模式值：最高 ${d.tmax ?? "—"}℃ / 最低 ${d.tmin ?? "—"}℃（预报时效 ${Math.round(lead)} 天，误差可达 ±2-3℃，仅作过程示意，不构成动作依据）`
+          };
         }
       }
     }
-    // "今天"取预报中当日；若预报缺失则取序列最后一天
-    const todayStr = localDayStr(0);
-    const today = all.find(x => x.date === todayStr) || all[all.length - 1];
-    window.__today = today;
-    window.__recent = all;
-    renderPhenology(today);
-    renderRisks(today);
-    renderTimeline(all);
-    renderAdvice(today);
-  } catch (err) {
-    $("phenology-now").innerHTML = `<span class="loading">数据加载失败：${err.message}（可尝试切换园块或稍后重试）</span>`;
   }
+  // "今天"取预报中当日；若预报缺失则取序列最后一天
+  const todayStr = localDayStr(0);
+  const today = all.find(x => x.date === todayStr) || all[all.length - 1];
+  window.__today = today;
+  window.__recent = all;
+  renderPhenology(today, degraded);
+  renderRisks(today);
+  renderTimeline(all);
+  renderAdvice(today);
 }
 
 // ---------- 初始化 ----------
