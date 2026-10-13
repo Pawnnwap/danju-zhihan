@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""十年级基线核算：提示负担（噪声预算）、休眠期常驻率、ET0 水分亏缺口径可行性
+"""十年级基线与定标核算：提示负担、休眠期常驻率、蒸散亏缺口径（含留出检验）
 
-用途（对应评审 C-Q1 / C-Q6 与 docs/02 的两处主张）：
-1. 各级提示的"年日数中位数/范围"——四类风险的提示负担，材料此前只有"多少天算可用"没有基线；
-2. 休眠期干旱常驻率的反事实核算——证明"休眠期不出干旱等级"是噪声控制（不抑制则 9 成天数常驻），
-   而不是把产品命名承诺自废掉；
-3. ET0 水分亏缺（30 天 ET0 − 30 天降水）口径试验：给出各物候期分位分布，并检验"直接把
-   def30 作为额外触发条件并进现有阈值"会不会把膨大期"重"级基线推高一个量级。
+对应评审 C-Q1/C-Q6、A-Q5/A-Q6，也回答"诚实标注之外能力到底怎样"：
+1. 提示负担：四类风险各级的年日数（中位数/范围）——材料此前只说"多少算可用"没有基线；
+2. 休眠期常驻率（反事实）：证明"降水口径在休眠期沉默"是噪声控制（照判则 89.8% 天数带级）；
+3. def30 = 近 30 天 ET0 累计 − 近 30 天累计降水：
+   - **分位阈值的唯一生成处**（phenology.js / backtest.py 的 DEF_THRESH 必须与此一致，
+     由 tools/parity_check.py 第 3 层断言绑定，评审 A-Q9）；
+   - **留出检验**：用 2016–2020 定标，在 2021–2025 评估，避免同一份样本既是考卷又是答案（A-Q6）；
+   - **可达性分解**：分别统计降水口径各子条件与蒸散口径的命中次数，防止把"结构不可达"读成"信号稀有"（A-Q6a）；
+   - **主导变量检查**：对比各物候期 ET0 与降水的 30 天中位数，说明 def30 主要由降水驱动（A-Q6b）。
 
-数据：仓库内冻结序列 tools/fixtures/liangshuihe_2016_2025.json（离线，可复算）。
+缺测语义与运行时一致：30 天窗口内 ET0 有任一缺失的日，一律不参与定标（评审 A-Q5——
+早前脚本把缺测 ET0 当 0mm 计入，与线上"缺测即停用蒸散口径"是两套语义）。
+
+数据：tools/fixtures/liangshuihe_2016_2025.json（离线）。
 用法：python tools/baseline_stats.py
 """
 import json
@@ -21,11 +27,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backtest  # noqa: E402
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 HERE = Path(__file__).resolve().parent
 FIXTURE = HERE / "fixtures" / "liangshuihe_2016_2025.json"
 RISK_LABEL = {"heat": "高温热害", "drought": "干旱", "cold": "花期/幼果低温", "freeze": "越冬冻害"}
+PHENO_IDS = ["dormant", "bud", "bloom", "young", "swell", "ripe"]
 PHENO_LABEL = {"dormant": "休眠", "bud": "萌芽/现蕾", "bloom": "开花", "young": "幼果",
                "swell": "膨大", "ripe": "成熟采收"}
+CALIB_YEARS = range(2016, 2021)   # 定标段
+EVAL_YEARS = range(2021, 2026)    # 留出评估段
+
+
+def percentiles(vals, qs):
+    v = sorted(vals)
+    return [v[min(len(v) - 1, int(q * len(v)))] for q in qs]
 
 
 def load():
@@ -33,9 +50,76 @@ def load():
     return fx["meta"], fx["daily"]
 
 
-def percentiles(vals, qs=(.5, .75, .9, .95, .99)):
-    v = sorted(vals)
-    return [v[min(len(v) - 1, int(q * len(v)))] for q in qs]
+def assess_all(daily):
+    return backtest.assess([dict(d) for d in backtest.filter_days(daily)])
+
+
+def et0_30(daily):
+    """每日的 30 天 ET0 累计与是否完整（与运行时同语义）。"""
+    et = daily.get("et0_fao_evapotranspiration") or []
+    by = {t: v for t, v in zip(daily["time"], et)}
+    out = {}
+    for d in daily["time"]:
+        cur = date.fromisoformat(d)
+        vals = [by.get((cur - timedelta(days=k)).isoformat()) for k in range(30)]
+        if any(v is None for v in vals):
+            out[d] = None
+        else:
+            out[d] = sum(vals)
+    return out
+
+
+def derive_thresholds(assessed, et30_by_date, years=None):
+    """def30 分物候期阈值（轻=p75／中=p90／重=p99），只用 ET0 完整的日（与运行时同语义，评审 A-Q5）。
+
+    重级取 p99 而非 p95：留出检验显示分位阈值跨期不稳（开花期用 2016–20 的 p95 在 2021–25 判到 20% 天数），
+    而"重"是用户会据以行动的等级，不经田间水分实测就必须落在极端分位上。
+    years=None 表示全段定标（代码内使用的即此表）。
+    """
+    vals = defaultdict(list)
+    dropped = 0
+    for d in assessed:
+        e = et30_by_date.get(d["date"])
+        if e is None or d.get("et30") is None:
+            dropped += 1
+            continue
+        year = date.fromisoformat(d["date"]).year
+        if years is not None and year not in years:
+            continue
+        vals[d["pheno"]].append(e - d["rain30"])
+    th = {}
+    for pid, v in vals.items():
+        p75, p90, p99 = percentiles(v, (.75, .90, .99))
+        th[pid] = {"轻": round(p75, 1), "中": round(p90, 1), "重": round(p99, 1)}
+    return th, dropped, vals
+
+
+def def_level(def30, th):
+    if def30 >= th["重"]:
+        return "重"
+    if def30 >= th["中"]:
+        return "中"
+    if def30 >= th["轻"]:
+        return "轻"
+    return None
+
+
+def rain_subhits(assessed):
+    """降水口径各子条件按物候期的命中次数——把"结构不可达"和"信号稀有"分开。"""
+    c = defaultdict(Counter)
+    for d in assessed:
+        if d.get("window_days", 0) < 30:
+            continue
+        pid = d["pheno"]
+        if d["dry_streak"] >= 25:
+            c[pid]["连旱≥25"] += 1
+        if d["rain30"] <= 15:
+            c[pid]["雨30≤15"] += 1
+        if d["rain30"] <= 30:
+            c[pid]["雨30≤30"] += 1
+        if d["rain30"] <= 45:
+            c[pid]["雨30≤45"] += 1
+    return c
 
 
 def main() -> int:
@@ -43,37 +127,33 @@ def main() -> int:
         print(f"缺少 {FIXTURE.name}，请先运行 python tools/fetch_fixture.py")
         return 1
     meta, daily = load()
-    n = len(daily["time"])
-    days = backtest.filter_days(daily)
-    assessed = backtest.assess([dict(d) for d in days])
+    assessed = assess_all(daily)
+    et30 = et0_30(daily)
     years = sorted({date.fromisoformat(d["date"]).year for d in assessed})
     print(f"数据：{meta['model']}｜请求坐标 {meta['requested_lat']},{meta['requested_lon']} → "
           f"实际格点 {meta['gridpoint_lat']},{meta['gridpoint_lon']}（海拔 {meta['elevation_m']}m）")
-    print(f"区间 {meta['start']}~{meta['end']}（{n} 天，有效 {len(assessed)} 天，拉取于 {meta['pulled_at_utc']}）\n")
+    print(f"区间 {meta['start']}~{meta['end']}（{len(assessed)} 天，无缺测日）｜拉取 {meta['pulled_at_utc']}")
+    print(f"定标段 {min(CALIB_YEARS)}–{max(CALIB_YEARS)}，留出评估段 {min(EVAL_YEARS)}–{max(EVAL_YEARS)}\n")
 
-    # —— 1) 提示负担：各风险各级的年日数 ——
-    print("=== 1) 提示负担（各级出现日数／年，2016–2025）===")
+    # —— 1) 提示负担 ——
+    print("=== 1) 提示负担（各级出现日数／年，现行引擎口径）===")
     for key in ("heat", "drought", "cold", "freeze"):
-        line = []
+        parts = []
         for lv in ("重", "中", "轻", "关注"):
-            per = []
-            for y in years:
-                c = sum(1 for d in assessed if d[f"{key}_level"] == lv
-                        and date.fromisoformat(d["date"]).year == y)
-                per.append(c)
+            per = [sum(1 for d in assessed if d[f"{key}_level"] == lv
+                       and date.fromisoformat(d["date"]).year == y) for y in years]
             if max(per) == 0:
                 continue
-            line.append(f"{lv} 中位 {st.median(per):.0f}（{min(per)}–{max(per)}）")
-        print(f"  {RISK_LABEL[key]:8} " + "｜".join(line))
+            parts.append(f"{lv} 中位 {st.median(per):.0f}（{min(per)}–{max(per)}）")
+        print(f"  {RISK_LABEL[key]:8} " + "｜".join(parts))
 
-    # —— 2) 休眠期干旱常驻率（反事实：若不抑制） ——
+    # —— 2) 休眠期降水口径常驻率（反事实） ——
     dor = [d for d in assessed if d["pheno"] == "dormant"]
-    print(f"\n=== 2) 休眠期干旱常驻率（反事实核算，n={len(dor)} 天）===")
     cf = {}
     for d in assessed:
-        dr, r, win = d["dry_streak"], d["rain30"], d["window_days"]
-        if win < 30:
+        if d.get("window_days", 0) < 30 or d.get("window_bad", 0):
             continue
+        dr, r = d["dry_streak"], d["rain30"]
         if dr >= 25 or r <= 15:
             cf[d["date"]] = "重"
         elif dr >= 15 or r <= 30:
@@ -81,46 +161,87 @@ def main() -> int:
         elif dr >= 8 or r <= 45:
             cf[d["date"]] = "轻"
     cnt = Counter(cf.get(d["date"]) for d in dor)
-    for lv in ("轻", "中", "重"):
-        print(f"  若休眠期照判：{lv}级 {cnt[lv]}/{len(dor)} 天 = {100 * cnt[lv] / len(dor):.1f}%")
-    print("  → 现行为：休眠期一律不出干旱等级（phenology.js drought 分支），墒情信号由冻害建议的"
-          "\"捏土验墒\"动作承载；这是噪声控制，不是能力撤回。")
+    any_lv = sum(1 for d in dor if d["date"] in cf)
+    print(f"\n=== 2) 休眠期反事实（n={len(dor)} 天）===")
+    print(f"  若降水口径照判：任一级 {any_lv}/{len(dor)} = {100 * any_lv / len(dor):.1f}%"
+          f"（轻 {100 * cnt['轻'] / len(dor):.1f}%、中 {100 * cnt['中'] / len(dor):.1f}%、"
+          f"重 {100 * cnt['重'] / len(dor):.1f}%）")
+    print("  → 现行为：降水口径在休眠期沉默；蒸散口径仍出级（阈值取该期自身分位，样本内常驻率≈25%/10%/1%）。")
 
-    # —— 3) ET0 水分亏缺口径试验 ——
-    et = daily.get("et0_fao_evapotranspiration")
-    if not et:
-        print("\n（fixture 无 et0 变量，跳过第 3 节；重跑 fetch_fixture.py 获取）")
-        return 0
-    by_date_et = {t: v for t, v in zip(daily["time"], et)}
-    print("\n=== 3) ET0 水分亏缺（def30 = 近30天ET0 − 近30天降水, mm）===")
-    print(f"  {'物候期':10}{'n':>6}{'p50':>8}{'p75':>8}{'p90':>8}{'p95':>8}{'p99':>8}{'max':>8}")
-    rows = defaultdict(list)
-    for d in assessed:
-        e30 = sum(by_date_et.get((date.fromisoformat(d["date"]) - timedelta(days=k)).isoformat()) or 0
-                  for k in range(30))
-        d["def30"] = e30 - d["rain30"]
-        rows[d["pheno"]].append(d)
-    for pid, lab in PHENO_LABEL.items():
-        vals = [d["def30"] for d in rows.get(pid, [])]
-        if not vals:
+    # —— 3) def30 定标 + 留出 ——
+    th, dropped, _ = derive_thresholds(assessed, et30)                 # 全段定标（代码内使用的即此表）
+    th_calib, _, _ = derive_thresholds(assessed, et30, CALIB_YEARS)     # 只用 2016–20，供留出检验
+    print("\n=== 3) def30 蒸散亏缺口径（轻=p75／中=p90／重=p99）===")
+    print(f"  ET0 窗口不完整而退出定标/评估的天数：{dropped}（本 fixture 四变量均无缺测；29 天为序列起始的回看不足）")
+    print(f"  {'物候期':10}{'2016-20定标阈值':>20}{'留出段占比 轻/中/重':>22}{'留出段重级天/年':>18}")
+    for pid in PHENO_IDS:
+        grp = [d for d in assessed if d["pheno"] == pid
+               and date.fromisoformat(d["date"]).year in EVAL_YEARS and et30.get(d["date"]) is not None]
+        if not grp or pid not in th_calib:
             continue
-        p = percentiles(vals)
-        print(f"  {lab:10}{len(vals):>6}" + "".join(f"{v:>8.1f}" for v in p) + f"{max(vals):>8.1f}")
+        lv = [def_level(et30[d["date"]] - d["rain30"], th_calib[pid]) for d in grp]
+        n = len(lv)
+        share = {x: 100 * sum(1 for v in lv if v == x) / n for x in ("轻", "中", "重")}
+        per_year = [sum(1 for d, v in zip(grp, lv) if v == "重"
+                        and date.fromisoformat(d["date"]).year == y) for y in EVAL_YEARS]
+        t = th_calib[pid]
+        th_txt = "{}/{}/{}".format(t["轻"], t["中"], t["重"])
+        sh_txt = "{:.1f}%/{:.1f}%/{:.1f}%".format(share["轻"], share["中"], share["重"])
+        hv_txt = "中位 {:.0f}（{}–{}）".format(st.median(per_year), min(per_year), max(per_year))
+        print("  {:10}{:>20}{:>22}{:>18}".format(PHENO_LABEL[pid], th_txt, sh_txt, hv_txt))
 
-    print("\n  把 def30 当额外触发条件并进现有阈值（OR 合并）的后果——膨大期\"重\"级年日数：")
-    sw = [d for d in assessed if d["pheno"] == "swell"]
-    base = [sum(1 for d in sw if d["drought_level"] == "重" and date.fromisoformat(d["date"]).year == y)
-            for y in years]
-    print(f"    现行口径（连旱日+rain30）：中位 {st.median(base):.0f} 天/年（{min(base)}–{max(base)}）")
-    for t in (40, 60, 70):
-        per = [sum(1 for d in sw if (d["dry_streak"] >= 25 or d["rain30"] <= 15 or d["def30"] >= t)
-                   and date.fromisoformat(d["date"]).year == y) for y in years]
-        rate = 100 * sum(1 for d in sw if d["def30"] >= t) / len(sw)
-        print(f"    并入 def30>={t}mm：\"重\"级 {st.median(per):.0f} 天/年（def30 触发率 {rate:.1f}% 天）")
-    print("  → 结论：单一 def30 阈值跨物候期不平移（休眠期 p50 已 22mm、膨大期 p50 仅 16mm），"
-          "直接 OR 合并会使\"重\"级基线放大一个量级、失去区分力。"
-          "ET0 口径的正确用法是按物候期分别定距平分位阈值，须与田间实测水分/农户响应联校，"
-          "列入 docs/03 试点校准任务，不在首发版拍脑袋上线。")
+    print("\n  3a) 恒等式提醒（评审 A-Q6）：按定义，定标样本自身的占比必然≈25%/10%/1%——"
+          "那是分位数的算术，不是农学证据。上表给的是**留出段 2021–2025 用 2016–2020 阈值**判出的实际占比，"
+          "偏离恒等式的幅度才是信息：偏离越大，说明该口径跨期越不稳，也就越不能凭分位宣称绝对缺水程度。")
+
+    print("\n  3b) 降水口径子条件可达性（十年命中次数，评审 A-Q6a）")
+    hits = rain_subhits(assessed)
+    for pid in PHENO_IDS:
+        if pid in hits:
+            print(f"    {PHENO_LABEL[pid]:10} " + " ".join(f"{k} {v}" for k, v in sorted(hits[pid].items())))
+    print("    → 膨大期『重』级需 连旱≥25 或 雨30≤15：若命中次数远小于其他条件，"
+          "则现行'重级稀有'部分是**结构不可达**而非信号稀少，材料不得据 0 天/年宣称区分力。")
+
+    print("\n  3c) def30 的主导变量（30 天累计的中位数，mm）")
+    for pid in PHENO_IDS:
+        grp = [d for d in assessed if d["pheno"] == pid and et30.get(d["date"]) is not None]
+        if not grp:
+            continue
+        e = st.median([et30[d["date"]] for d in grp])
+        p = st.median([d["rain30"] for d in grp])
+        print(f"    {PHENO_LABEL[pid]:10} ET0_30 中位 {e:6.1f}｜降水_30 中位 {p:6.1f}｜def30 中位 {e - p:6.1f}")
+    print("    → 各物候期 def30 的差异主要由**降水**项驱动（夏季 ET0 远高于冬季，def30 反而更低），"
+          "故 def30 是\"降水亏缺扣掉蒸散需求\"的合成排名量，不等同作物缺水强度；"
+          "其增量信息集中在高 ET0 少雨过程（如 2022-08），这正是它相对纯降水口径的实际增益。")
+
+    print("\n  3d) 全段（2016–2025）定标阈值 = 代码内 DEF_THRESH（单一事实源）")
+    for pid in PHENO_IDS:
+        if pid in th:
+            print("    {:10} 轻 {:6.1f} / 中 {:6.1f} / 重 {:6.1f}".format(
+                PHENO_LABEL[pid], th[pid]["轻"], th[pid]["中"], th[pid]["重"]))
+    print("    与 phenology.js / backtest.py 的 DEF_THRESH 一致性由 parity_check.py 第 3 层断言：")
+    bad = []
+    for pid in PHENO_IDS:
+        if pid in th and pid in backtest.DEF_THRESH:
+            for lv in ("轻", "中", "重"):
+                if abs(th[pid][lv] - backtest.DEF_THRESH[pid][lv]) > 0.05:
+                    bad.append(f"{pid}.{lv}：现算 {th[pid][lv]} ≠ 代码 {backtest.DEF_THRESH[pid][lv]}")
+    if bad:
+        print("    [X] 阈值与代码脱钩：\n      " + "\n      ".join(bad))
+        return 1
+    print("    [OK] 现算分位与 phenology.js / backtest.py 的 DEF_THRESH 一致（±0.05）")
+
+    print("\n=== 4) 2022-08-24~28 实况（蒸散口径的增量证据）===")
+    for d in assessed:
+        if "2022-08-24" <= d["date"] <= "2022-08-28" and d["pheno"] == "swell":
+            e = et30.get(d["date"])
+            def30 = None if e is None else e - d["rain30"]
+            dv = def_level(def30, th["swell"]) if def30 is not None and "swell" in th else None
+            print("    {} 连旱{:2}天 雨30={:5.1f} def30={:6.1f}｜现行等级 {}（蒸散口径单独看会判 {}）".format(
+                d["date"], d["dry_streak"], d["rain30"], def30, d["drought_level"] or "无", dv or "无"))
+    print("    → 同一周（2022-08-27 中国气象局在丹江口汇水流域飞机增雨，公开报道），"
+          "纯降水口径最高只判到『中』；08-24~27 蒸散口径判『重』（08-28 判『中』）——"
+          "把这段抬上去的正是新分支，可逐日复算。")
     return 0
 
 

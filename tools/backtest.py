@@ -38,6 +38,21 @@ PHENOLOGY = [
 
 LEVELS = ("重", "中", "轻", "关注")
 
+# 蒸散亏缺（def30 = 近30天ET0累计 − 近30天累计降水, mm）分物候期阈值（全段 2016–2025 的 p75/p90/p99）。
+# 与 phenology.js 的 DEF_THRESH 同表；唯一生成处是 tools/baseline_stats.py:derive_thresholds()，
+# 由 parity_check.py 第 3 层断言把三方绑死（评审 A-Q9 的单一事实源问题）。
+DEF_THRESH = {
+    "dormant": {"轻": 34.0, "中": 40.7, "重": 48.4},
+    "bud": {"轻": 43.0, "中": 56.8, "重": 84.0},
+    "bloom": {"轻": 55.3, "中": 86.0, "重": 102.3},
+    "young": {"轻": 83.5, "中": 102.3, "重": 116.7},
+    "swell": {"轻": 54.1, "中": 87.4, "重": 122.6},
+    "ripe": {"轻": 31.4, "中": 55.5, "重": 97.5},
+}
+# 开花期蒸散口径上限"中"（留出检验显示该档分位最不稳，见 docs/02 §5），2027 花期对表前不解
+DEF_MAX_LEVEL = {"bloom": "中"}
+RANK = {None: 0, "轻": 1, "中": 2, "重": 3}
+
 
 def pheno_id(cur: date) -> str:
     m, d = cur.month, cur.day
@@ -55,7 +70,8 @@ def fetch(lat: float, lon: float, start: str = START, end: str = END) -> list[di
     url = (
         "https://archive-api.open-meteo.com/v1/archive"
         f"?latitude={lat}&longitude={lon}&start_date={start}&end_date={end}"
-        "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Asia%2FShanghai"
+        "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration"
+        "&timezone=Asia%2FShanghai"
     )
     with urllib.request.urlopen(url, timeout=30) as r:
         j = json.load(r)
@@ -63,13 +79,15 @@ def fetch(lat: float, lon: float, start: str = START, end: str = END) -> list[di
 
 
 def filter_days(d: dict) -> list[dict]:
-    """与 JS fetchArchive 一致：三变量全非空才保留该日。"""
+    """与 JS fetchArchive 一致：三变量全非空才保留该日；ET0 可为 None（缺失时蒸散口径自动退出）。"""
+    et = d.get("et0_fao_evapotranspiration") or [None] * len(d["time"])
     days = []
     for i, t in enumerate(d["time"]):
         tmax, tmin, pr = d["temperature_2m_max"][i], d["temperature_2m_min"][i], d["precipitation_sum"][i]
         if tmax is None or tmin is None or pr is None:
             continue
-        days.append({"date": t, "tmax": tmax, "tmin": tmin, "pr": pr})
+        e = et[i] if i < len(et) else None
+        days.append({"date": t, "tmax": tmax, "tmin": tmin, "pr": pr, "et": e})
     return days
 
 
@@ -86,52 +104,85 @@ def assess(days: list[dict]) -> list[dict]:
         tmax, tmin, pr = d["tmax"], d["tmin"], d["pr"]
         pid = pheno_id(cur)
 
-        # —— 热害 ——（与 phenology.js heat 逐分支一致）
-        streak = streak + 1 if tmax >= 35 else 0
-        if tmax >= 39:
-            lv = "重"
-        elif tmax >= 37:
-            lv = "中"
-        elif tmax >= 35:
-            lv = "轻"
-        elif tmax >= 33:
-            lv = "关注"
-        else:
-            lv = None
-        if streak >= 5 and tmax >= 35:
-            lv = "重"
-        elif streak >= 3 and tmax >= 35 and lv == "轻":
-            lv = "中"
+        # —— 热害 ——（与 phenology.js heat 逐分支一致；null 一律不判级）
+        streak = streak + 1 if (tmax is not None and tmax >= 35) else 0
+        lv = None
+        if tmax is not None:
+            if tmax >= 39:
+                lv = "重"
+            elif tmax >= 37:
+                lv = "中"
+            elif tmax >= 35:
+                lv = "轻"
+            elif tmax >= 33:
+                lv = "关注"
+            if streak >= 5 and tmax >= 35:
+                lv = "重"
+            elif streak >= 3 and tmax >= 35 and lv == "轻":
+                lv = "中"
 
-        # —— 干旱 ——（连旱日 <1mm + 30 天日历窗口累计；阈值比较用原始值）
-        dry_streak = dry_streak + 1 if pr < 1 else 0
-        rain30, win = 0.0, 0
+        # —— 干旱 ——（双口径取高者，与 phenology.js drought 逐分支一致；阈值比较一律用原始值）
+        dry_streak = dry_streak + 1 if (pr is not None and pr < 1) else 0
+        rain30, win, et30, et_missing, bad = 0.0, 0, 0.0, 0, 0
         for j in range(i, -1, -1):
             if (cur - date.fromisoformat(days[j]["date"])).days > 29:
                 break
-            rain30 += days[j]["pr"]
             win += 1
+            pj = days[j]
+            if pj["pr"] is None or pj["tmax"] is None:  # 窗口内有缺测日 → 不判级（显式缺测语义）
+                bad += 1
+                continue
+            rain30 += pj["pr"]
+            e = pj.get("et")
+            if e is None:
+                et_missing += 1
+            else:
+                et30 += e
         dl = None
-        if i >= 29 and win >= 30 and pid != "dormant":
-            if dry_streak >= 25 or rain30 <= 15:
-                dl = "重"
-            elif dry_streak >= 15 or rain30 <= 30:
-                dl = "中"
-            elif dry_streak >= 8 or rain30 <= 45:
-                dl = "轻"
+        def30 = None
+        if i >= 29 and win >= 30 and bad == 0:
+            rl = None
+            if pid != "dormant":  # 降水口径在休眠期不判级（照判则 89.8% 天数带级，见 docs/02）
+                if dry_streak >= 25 or rain30 <= 15:
+                    rl = "重"
+                elif dry_streak >= 15 or rain30 <= 30:
+                    rl = "中"
+                elif dry_streak >= 8 or rain30 <= 45:
+                    rl = "轻"
+            dv = None
+            def30 = None
+            if et_missing == 0 and pid in DEF_THRESH:
+                def30 = et30 - rain30
+                th = DEF_THRESH[pid]
+                if def30 >= th["重"]:
+                    dv = "重"
+                elif def30 >= th["中"]:
+                    dv = "中"
+                elif def30 >= th["轻"]:
+                    dv = "轻"
+                cap = DEF_MAX_LEVEL.get(pid)
+                if cap and RANK.get(dv, 0) > RANK[cap]:
+                    dv = cap
+            dl = rl if RANK.get(rl, 0) >= RANK.get(dv, 0) else dv
+        d["drought_level"] = dl
+        d["drought_why"] = (f"连续{dry_streak}天无有效降水，30天累计{rain30:.1f}mm"
+                           f"；def30={'' if def30 is None else f'{def30:.1f}mm'}")
+        d.update({"dry_streak": dry_streak, "rain30": rain30, "et30": None if et_missing else et30,
+                  "window_days": win, "window_bad": bad})
 
         # —— 花期/幼果低温（倒春寒）——
         cl = None
-        if pid == "bloom":
-            cl = "重" if tmin <= 2 else "中" if tmin <= 5 else "关注" if tmin <= 8 else None
-        elif pid == "bud":
-            cl = "重" if tmin <= 0 else "中" if tmin <= 2 else "轻" if tmin <= 4 else "关注" if tmin <= 7 else None
-        elif pid == "young":
-            cl = "重" if tmin <= 0 else "中" if tmin <= 2 else "轻" if tmin <= 5 else None
+        if tmin is not None:
+            if pid == "bloom":
+                cl = "重" if tmin <= 2 else "中" if tmin <= 5 else "关注" if tmin <= 8 else None
+            elif pid == "bud":
+                cl = "重" if tmin <= 0 else "中" if tmin <= 2 else "轻" if tmin <= 4 else "关注" if tmin <= 7 else None
+            elif pid == "young":
+                cl = "重" if tmin <= 0 else "中" if tmin <= 2 else "轻" if tmin <= 5 else None
 
         # —— 越冬冻害 ——（休眠期，或成熟采收期 ≤-5℃）
         fl = None
-        if pid == "dormant" or (pid == "ripe" and tmin <= -5):
+        if tmin is not None and (pid == "dormant" or (pid == "ripe" and tmin <= -5)):
             fl = "重" if tmin <= -7 else "中" if tmin <= -5 else "轻" if tmin <= -3 else None
 
         d.update({
@@ -144,10 +195,21 @@ def assess(days: list[dict]) -> list[dict]:
 
 
 HEADLINE = {  # --check 断言的头条数字（改动规则导致数字变化时必须同步全部材料，否则回归闸门失败）
+    # 2026-10-13 起：①干旱为"降水型 ∪ 蒸散型取高者"双口径；②回测改为带 35 天 warm-up 喂数，
+    # 与产品运行时（前端取 now−100d）一致。此前"重 0/中 3"是无 warm-up 且窗口首月被人为沉默的伪影。
     "heat_days_35": 30, "heat_severe": 13, "peak_tmax": 40.9, "peak_date": "2022-08-07",
-    "first_severe": "2022-08-04", "lead_days": 3, "drought_mid": 3, "drought_severe": 0,
-    "longest_dry_streak": 12,
+    "first_severe": "2022-08-04", "lead_days": 3,
+    "drought_first": "2022-06-01", "drought_mid": 54, "drought_severe": 8,
+    "longest_dry_streak": 12, "incomplete_window_days": 0,
 }
+
+
+WARMUP_DAYS = 35  # 引擎需要 30 天回看窗口；切片前额外取 35 天，使窗口首日与产品运行时同样"看得见"历史（评审 A-Q1）
+
+
+def windowed(assessed: list[dict], start: str, end: str) -> list[dict]:
+    """只保留报告区间内的日，但等级是在带 warm-up 的完整序列上算出来的。"""
+    return [d for d in assessed if start <= d["date"] <= end]
 
 
 def summarize(days: list[dict]) -> dict:
@@ -171,6 +233,7 @@ def summarize(days: list[dict]) -> dict:
         "drought_mid": d_mid,
         "drought_severe": d_severe,
         "longest_dry_streak": d_long["dry_streak"],
+        "incomplete_window_days": sum(1 for d in days if d["window_days"] < 30 or d.get("window_bad", 0)),
         # "重"级归因：单日 ≥39℃ 触发 vs 连续日数升级触发（评审 A-Q3：不得把时效记在升级机制头上，除非它真的先出现）
         "heat_severe_streak": sum(1 for d in days if d["heat_level"] == "重" and d["tmax"] < 39),
         "first_severe_streak": next((d["date"] for d in days if d["heat_level"] == "重" and d["tmax"] < 39), None),
@@ -183,7 +246,8 @@ def summarize(days: list[dict]) -> dict:
 
 
 def report(days: list[dict], s: dict, source: str) -> None:
-    print(f"数据源: {source}")
+    if source:
+        print(f"数据源: {source}")
     print("\n[热害回测]")
     print(f"≥35℃ 日数: {s['heat_days_35']}")
     print(f"热害『重』级日数: {s['heat_severe']}")
@@ -208,6 +272,9 @@ def report(days: list[dict], s: dict, source: str) -> None:
           "官方灾情对照与阈值校准列入试点任务（docs/03）。")
 
 
+if hasattr(sys.stdout, "reconfigure"):  # Windows 默认 GBK 控制台降级输出，不崩
+    sys.stdout.reconfigure(errors="replace")
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="丹橘知旱历史回测")
     ap.add_argument("lat", type=float, nargs="?", default=None)
@@ -224,21 +291,28 @@ def main() -> int:
         meta = j.get("meta", {})
         daily = j["daily"]
         s0, e0 = args.start or meta.get("start"), args.end or meta.get("end")
-        keep = [i for i, t in enumerate(daily["time"]) if s0 <= t <= e0]
-        daily = {k: [v[i] for i in keep] for k, v in daily.items()}
-        days = filter_days(daily)
+        w0 = (date.fromisoformat(s0) - timedelta(days=WARMUP_DAYS)).isoformat()
+        keep = [i for i, t in enumerate(daily["time"]) if w0 <= t <= e0]
+        sl = {k: [v[i] for i in keep] for k, v in daily.items()}
         source = (f"fixture {args.fixture.name}（请求坐标 {meta.get('requested_lat')},{meta.get('requested_lon')} "
                   f"→ 实际格点 {meta.get('gridpoint_lat')},{meta.get('gridpoint_lon')}；"
-                  f"{s0}~{e0}；拉取于 {meta.get('pulled_at_utc')}；共 {len(days)} 天）")
+                  f"报告区间 {s0}~{e0}，另取 warm-up {w0}~{s0}；拉取于 {meta.get('pulled_at_utc')}）")
     else:
+        s0, e0 = START, END
         lat = args.lat if args.lat is not None else LAT
         lon = args.lon if args.lon is not None else LON
-        days = fetch(lat, lon)
-        source = f"Open-Meteo Archive（坐标 {lat}, {lon}；{START}~{END}，当场联网）"
+        w0 = (date.fromisoformat(s0) - timedelta(days=WARMUP_DAYS)).isoformat()
+        sl = None
+        days_raw = fetch(lat, lon, w0, e0)
+        source = f"Open-Meteo Archive（坐标 {lat}, {lon}；报告区间 {s0}~{e0}，warm-up 自 {w0}，当场联网）"
 
-    assessed = assess(days)
+    days = days_raw if sl is None else filter_days(sl)
+    assessed = windowed(assess(days), s0, e0)
+    print(f"数据源: {source}")
+    print(f"报告区间天数: {len(assessed)}（其中 ET0 全程可用 {sum(1 for d in assessed if d.get('et30') is not None)} 天；"
+          f"窗口有缺测 {sum(1 for d in assessed if d.get('window_bad'))} 天）")
     s = summarize(assessed)
-    report(assessed, s, source)
+    report(assessed, s, "")
 
     if args.check:
         bad = {k: (s[k], v) for k, v in HEADLINE.items() if s[k] != v}

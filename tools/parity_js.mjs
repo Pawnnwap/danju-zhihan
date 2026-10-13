@@ -9,7 +9,8 @@ import fs from 'node:fs';
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 
 // phenology.js 的顶层 const 只在同一次 eval 作用域内可见，故把源码与取值表达式拼成一次 eval
-const api = (0, eval)(read('../phenology.js') + '\n;({ RISKS, parseDay, phenologyOf, PHENOLOGY })');
+const api = (0, eval)(read('../phenology.js')
+  + '\n;({ RISKS, parseDay, phenologyOf, PHENOLOGY, DEF_THRESH, DEF_MAX_LEVEL })');
 
 // 从 app.js 中抽出 assess 函数体（按花括号配平），不复制粘贴规则实现
 const app = read('../app.js');
@@ -29,9 +30,11 @@ const assess = new Function(
 const lv = (r) => (r ? r.level : null);
 
 if (process.argv[2] === '--tables') {
-  process.stdout.write(
-    JSON.stringify(api.PHENOLOGY.map((p) => ({ id: p.id, name: p.name, from: p.from, to: p.to }))),
-    () => process.exit(0));
+  process.stdout.write(JSON.stringify({
+    phenology: api.PHENOLOGY.map((p) => ({ id: p.id, name: p.name, from: p.from, to: p.to })),
+    defThresh: api.DEF_THRESH,
+    defMaxLevel: api.DEF_MAX_LEVEL,
+  }), () => process.exit(0));
 } else {
   const chunks = [];
   process.stdin.on('data', (c) => chunks.push(c));

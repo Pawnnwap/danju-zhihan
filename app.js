@@ -48,13 +48,15 @@ function pickDaily(j, vars) {
 async function fetchArchive(lat, lon, startDate, endDate) {
   const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lon}` +
     `&start_date=${startDate}&end_date=${endDate}` +
-    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Asia%2FShanghai`;
-  const d = pickDaily(await httpJson(url), ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"]);
+    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration&timezone=Asia%2FShanghai`;
+  const VARS = ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "et0_fao_evapotranspiration"];
+  const d = pickDaily(await httpJson(url), VARS);
   return d.time.map((t, i) => ({
     date: t,
     tmax: d.temperature_2m_max[i],
     tmin: d.temperature_2m_min[i],
     pr: d.precipitation_sum[i],
+    et: d.et0_fao_evapotranspiration[i], // 可为 null：缺 ET0 时蒸散口径自动退出，只走降水口径
   })).filter(x => x.tmax != null && x.tmin != null && x.pr != null); // 丢弃滞后的空尾日
 }
 
@@ -62,15 +64,19 @@ async function fetchForecast(lat, lon) {
   // past_days=6 回填 archive 滞后期（now-6d~now-1d），避免合并序列出现空洞
   // （空洞会使 streak 跨洞累积、rain30 窗口被拉长——评审发现的工程缺陷）
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&past_days=6&forecast_days=16&timezone=Asia%2FShanghai`;
-  const d = pickDaily(await httpJson(url), ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"]);
+    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration&past_days=6&forecast_days=16&timezone=Asia%2FShanghai`;
+  const VARS = ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "et0_fao_evapotranspiration"];
+  const d = pickDaily(await httpJson(url), VARS);
+  // 与 fetchArchive 同规则剔除缺测日（评审 A-Q4：两条取数路径此前不一致，
+  // 前端会把 null 降水当 0mm 记进累计、当"有水"清零连旱，从而虚高干旱等级）
   return d.time.map((t, i) => ({
     date: t,
     tmax: d.temperature_2m_max[i],
     tmin: d.temperature_2m_min[i],
     pr: d.precipitation_sum[i],
+    et: d.et0_fao_evapotranspiration[i],
     forecast: true,
-  }));
+  })).filter(x => x.tmax != null && x.tmin != null && x.pr != null);
 }
 
 function mergeSeries(past, forecast) {
@@ -96,21 +102,23 @@ function assess(days) {
     dryStreak = (day.pr != null && day.pr < 1) ? dryStreak + 1 : 0;
     // 回看窗口按日历天数截取（防数据洞拉长实际跨度——评审 Q5）：
     // rain30 = 日期 ≥ 当日-29 天的元素和；windowDays = 窗口内实际天数
-    let rain30 = 0, windowDays = 0;
+    let rain30 = 0, windowDays = 0, windowBad = 0, et30 = 0, etMissing = 0;
+    let rain7 = 0;
     for (let j = i; j >= 0; j--) {
-      if ((date - parseDay(days[j].date)) / 86400000 > 29) break;
-      rain30 += (days[j].pr || 0);
+      const span = (date - parseDay(days[j].date)) / 86400000;
+      if (span > 29) break;
       windowDays++;
+      // 显式缺测语义：窗口内任一日降水或最高温缺失，则该日不判干旱（不当 0mm，也不静默丢日）
+      if (days[j].pr == null || days[j].tmax == null) { windowBad++; continue; }
+      rain30 += days[j].pr;
+      if (span <= 6) rain7 += days[j].pr;
+      if (days[j].et == null) etMissing++; else et30 += days[j].et;
     }
-    let rain7 = 0;  // 近 7 天累计降水：当前规则未使用，保留供 ET0/水分盈亏口径校准时复用
-    for (let j = i; j >= 0; j--) {
-      if ((date - parseDay(days[j].date)) / 86400000 > 6) break;
-      rain7 += (days[j].pr || 0);
-    }
-    const ctx = { pheno, heatStreak, dryStreak, rain30, rain7, windowDays, dayIndex: i };
+    const ctx = { pheno, heatStreak, dryStreak, rain30, rain7, windowDays, windowBad,
+                  dayIndex: i, et30: etMissing === 0 ? et30 : null };
     const risks = {};
     for (const r of RISKS) risks[r.id] = r.eval(day, ctx);
-    out.push({ ...day, pheno, risks });
+    out.push({ ...day, pheno, risks, dq: { windowDays, windowBad, etOk: etMissing === 0 } });
   }
   return out;
 }
@@ -145,6 +153,17 @@ function renderPhenology(today, note = "") {
     (note ? `<br><span class="err">⚠️ ${esc(note)}</span>` : "");
 }
 
+// "无等级"有三种含义，对用户必须分开说（评审 A-Q10：把"不判级"写成"没旱情"会误导越冬管理）
+function idleLabel(id, today) {
+  const dq = today.dq;
+  if (id === "drought" && dq) {
+    if (dq.windowDays < 30 || dq.windowBad > 0) return "不判级：30 天回看数据不完整";
+    if (!dq.etOk) return "不判级：ET0 缺测，蒸散口径本轮退出";
+    if (today.pheno.id === "dormant") return "不判级：休眠期降水口径沉默，蒸散口径未达线";
+  }
+  return "今日无该风险触发";
+}
+
 function renderRisks(today) {
   $("risk-now").innerHTML = Object.keys(RISK_NAME).map(id => {
     const r = today.risks[id];
@@ -152,7 +171,7 @@ function renderRisks(today) {
     return `<div class="risk-item lv-${lv === "无" ? "" : lv}">
       <div class="name">${RISK_NAME[id]}</div>
       <div class="level">${lv}</div>
-      <div class="why">${r ? r.why : "今日无该风险触发"}</div>
+      <div class="why">${r ? esc(r.why) : esc(idleLabel(id, today))}</div>
     </div>`;
   }).join("");
 }
@@ -170,6 +189,20 @@ function renderTimeline(all) {
   }).join("");
 }
 
+// 外部性动作与来源措辞（评审 C-Q6/C-Q8）：页面不替用户做合规判断，含外部性的动作一律前置标记；
+// 规则来源只是公开技术文件的摘录整理，不能读成官方背书。
+const CONFIRM_TAG = "【需当地确认后才可执行】";
+const SRC_NOTE = "（本项目按公开技术文件自行整理的规则摘录，与发文单位无关联，未经当地核验）";
+const adviceText = (it) => { const a = adviceOf(it); return (a.confirm ? CONFIRM_TAG : "") + a.t; };
+
+// fail-closed（评审 A-Q7）：含外部性的动作默认**不进入可执行建议**，只出现在"待当地确认清单"；
+// 现场有农技员/主管部门确认后，把该动作文本写入本机 localStorage 的 confirmed_actions 才升格为可执行。
+function confirmedActions() {
+  try { return JSON.parse(localStorage.getItem("confirmed_actions") || "[]"); } catch (e) { return []; }
+}
+const isConfirmed = (t) => confirmedActions().includes(t);
+const adviceItem = (a) => `<li>${a.confirm ? "【已经当地确认】" : ""}${esc(a.t)}</li>`;
+
 function renderAdvice(today) {
   const PHENO_TIP = {
     dormant: "做好防冻预案检查", bud: "关注倒春寒预报", bloom: "保花为主，留意低温与干旱",
@@ -184,11 +217,15 @@ function renderAdvice(today) {
   } else {
     html = actives.map(([k, v]) => {
       const lib = ADVICE[k];
-      const items = lib.items[today.pheno.id] || lib.items.default;
-      return `<div class="adv-item"><h4>【${RISK_NAME[k]}·${v.level}】${v.why}</h4>
-        <ul>${items.map(x => `<li>${x}</li>`).join("")}</ul>
-        <div class="src">规则来源：${lib.src}</div></div>`;
+      const items = (lib.items[today.pheno.id] || lib.items.default).map(adviceOf);
+      const go = items.filter(x => !x.confirm || isConfirmed(x.t)).map(adviceItem).join("");
+      const wait = items.filter(x => x.confirm && !isConfirmed(x.t)).map((x) => `<li>${esc(x.t)}</li>`).join("");
+      return `<div class="adv-item"><h4>【${RISK_NAME[k]}·${v.level}】${esc(v.why)}</h4>
+        <ul>${go || "<li>本风险下暂无可自动执行的动作</li>"}</ul>
+        ${wait ? `<h5>待当地确认清单（未确认前不作为可执行建议）</h5><ul class="pending">${wait}</ul>` : ""}
+        <div class="src">规则来源：${esc(lib.src)}${SRC_NOTE}</div></div>`;
     }).join("");
+    html += `<div class="src">"待当地确认"针对库区农事焚烧、地膜残留、灌溉退水与投入品使用等外部性动作；本工具不替你判断合规性，确认后由农技员或农户在本机登记即可升格为可执行建议。</div>`;
   }
   $("advice").innerHTML = html;
 }
@@ -269,11 +306,20 @@ function ruleAnswer(q) {
   if (/灌|浇|水|旱/.test(q)) {
     const d = t.risks.drought, h = t.risks.heat;
     a.push(d ? `干旱风险为【${d.level}】：${d.why}。` : "当前干旱风险未触发。", h ? `高温风险为【${h.level}】。` : "");
-    a.push(ADVICE.drought.items[t.pheno.id] || ADVICE.drought.items.default);
+    a.push((ADVICE.drought.items[t.pheno.id] || ADVICE.drought.items.default).map(adviceText));
   } else if (/冻|寒|低温|冷/.test(q)) {
+    // 按实际触发的风险取库（评审 A-Q10：此前低温分支一律取 freeze 库，
+    // 花期/幼果低温触发时既取错建议又与同页建议面板给出两套动作）
     const c = t.risks.cold, f = t.risks.freeze;
-    a.push(c ? `低温风险【${c.level}】：${c.why}` : f ? `冻害风险【${f.level}】：${f.why}` : "当前低温/冻害风险未触发。");
-    a.push(ADVICE.freeze.items[t.pheno.id] || ADVICE.freeze.items.default);
+    if (c) {
+      a.push(`低温风险【${c.level}】：${c.why}`);
+      a.push((ADVICE.cold.items[t.pheno.id] || ADVICE.cold.items.default).map(adviceText));
+    } else if (f) {
+      a.push(`冻害风险【${f.level}】：${f.why}`);
+      a.push((ADVICE.freeze.items[t.pheno.id] || ADVICE.freeze.items.default).map(adviceText));
+    } else {
+      a.push("当前低温/冻害风险未触发。");
+    }
   } else {
     a.push(`当前处于${t.pheno.name}（${t.pheno.note}）。`);
     const actives = Object.entries(t.risks).filter(([k, v]) => v && v.level !== "无");
@@ -353,15 +399,20 @@ function exportReport() {
   const adviceHtml = actives.length
     ? actives.map(([k, v]) => {
         const lib = ADVICE[k];
-        const items = lib.items[t.pheno.id] || lib.items.default;
-        return `<h3>${RISK_NAME[k]}（${v.level}）</h3><ul>${items.map(x => `<li>${x}</li>`).join("")}</ul><p class="src">规则来源：${lib.src}</p>`;
+        const items = (lib.items[t.pheno.id] || lib.items.default).map(adviceOf);
+        const go = items.filter(x => !x.confirm || isConfirmed(x.t)).map(adviceItem).join("");
+        const wait = items.filter(x => x.confirm && !isConfirmed(x.t)).map((x) => `<li>${esc(x.t)}</li>`).join("");
+        return `<h3>${RISK_NAME[k]}（${v.level}）</h3><ul>${go || "<li>本风险下暂无可自动执行的动作</li>"}</ul>` +
+          (wait ? `<h4>待当地确认清单（未确认前不作为可执行建议）</h4><ul>${wait}</ul>` : "") +
+          `<p class="src">规则来源：${esc(lib.src)}${SRC_NOTE}</p>`;
       }).join("")
     : `<p>当前无中重度风险。当前物候：${t.pheno.name}（${t.pheno.note}）。</p>`;
   const html = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>丹橘知旱建议报告 ${t.date}</title>
 <style>body{font-family:"Microsoft YaHei",sans-serif;max-width:800px;margin:24px auto;color:#1f2d27}h1{color:#0e5233}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;font-size:14px}.src{color:#6b7a72;font-size:12px}.meta{color:#6b7a72;font-size:13px}</style>
 </head><body>
 <h1>丹橘知旱 · 柑橘园气候决策建议报告</h1>
-<p class="meta">园块：${currentSite.name}（${currentSite.lat}, ${currentSite.lon}）｜数据日期：${t.date}${t.forecast ? "（预报）" : ""}｜生成时间：${new Date().toLocaleString("zh-CN")}</p>
+<p class="meta">园块：${esc(currentSite.name)}（${esc(currentSite.lat)}, ${esc(currentSite.lon)}）｜数据日期：${t.date}${t.forecast ? "（预报）" : ""}｜生成时间：${new Date().toLocaleString("zh-CN")}</p>
+<p class="src">本建议由开源工具生成、未经本地核验；转述给其他农户时请一并说明这一点。</p>
 <p>当前物候：<b>${t.pheno.name}</b>——${t.pheno.note}。当日气象：最高 ${t.tmax}℃ / 最低 ${t.tmin}℃ / 降水 ${t.pr}mm。</p>
 <h2>一、四类风险等级</h2>
 <table><tr><th>风险</th><th>等级</th><th>触发依据</th></tr>${risks}</table>
@@ -385,6 +436,21 @@ function exportCsv() {
   }
   const csv = "\uFEFF" + rows.map(r => r.join(",")).join("\n");
   downloadFile(`丹橘知旱-风险日历-${all[0].date}_${all[all.length - 1].date}.csv`, csv, "text/csv;charset=utf-8");
+}
+
+// ---------- 停服公告（docs/03 §3 退场机制的执行件）----------
+// 本项目无账号、不落库，除试点户外没有任何用户名单，因此"公告"只能走这条通道：
+// 停服决策时把日期填入 SUNSET_DATE 并重新部署，任何打开页面的人都会看到剩余天数。
+const SUNSET_DATE = "";
+const todayStr = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+function renderSunset(dateStr = SUNSET_DATE) {
+  const el = $("sunset");
+  if (!el || !dateStr) return;
+  const days = Math.ceil((parseDay(dateStr) - parseDay(todayStr())) / 86400000);
+  el.textContent = days > 0
+    ? `停服公告：本工具计划于 ${dateStr} 停止在线服务（还剩 ${days} 天）。此后代码、规则库与物候表校准流程以开源移交包形式存档，可自助部署。`
+    : `本工具已于 ${dateStr} 停止在线更新，当前为归档版本；规则库与源码仍开源可用。`;
+  el.style.display = "block";
 }
 
 // ---------- 主流程 ----------
@@ -443,6 +509,7 @@ function localDayStr(offsetDays = 0) {
 }
 
 // ---------- 初始化 ----------
+renderSunset();
 renderSites();
 document.querySelectorAll("[data-replay]").forEach(b => b.onclick = () => runReplay(b.dataset.replay));
 $("ask").onclick = onAsk;
