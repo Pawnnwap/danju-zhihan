@@ -1,0 +1,55 @@
+{
+  "ran_at_utc": "2026-10-19T12:49:23Z",
+  "commit": "750d6fe",
+  "branch": "main",
+  "working_tree_dirty": true,
+  "fixture": {
+    "file": "liangshuihe_2016_2025.json",
+    "gridpoint": "32.5835,111.3764",
+    "range": "2016-01-01~2025-12-31",
+    "pulled_at_utc": "2026-10-13T13:28:26Z",
+    "model": "ERA5-Land 再分析（Open-Meteo Archive API，约 9km 格点）"
+  },
+  "gates": {
+    "parity": {
+      "rc": 0,
+      "declared": [
+        442
+      ],
+      "declared2": [
+        37
+      ]
+    },
+    "headline": {
+      "rc": 0,
+      "declared": null,
+      "declared2": null
+    },
+    "baseline": {
+      "rc": 0,
+      "declared": null,
+      "declared2": null
+    },
+    "smoke": {
+      "rc": 0,
+      "declared": null,
+      "declared2": null
+    },
+    "mutation": {
+      "rc": 0,
+      "declared": [
+        44,
+        44
+      ],
+      "declared2": null
+    },
+    "docs": {
+      "rc": 0,
+      "declared": [
+        69
+      ],
+      "declared2": null
+    }
+  },
+  "all_green": true
+}

@@ -34,6 +34,26 @@
       </label>
       <span class="hint">预置坐标为乡镇中心近似值，精确园块可输入自定坐标</span>
     </div>
+    <div class="custom-site">
+      <label>本园块灌溉条件：
+        <select id="irr">
+          <option value="unknown">未记录</option>
+          <option value="yes">有灌溉（滴灌/沟灌）</option>
+          <option value="no">无灌溉（靠天/拉水）</option>
+        </select>
+      </label>
+      <span class="hint" id="irr-tip"></span>
+    </div>
+    <div class="custom-site">
+      <label>本园块挂果情况：
+        <select id="fruit">
+          <option value="unknown">未记录</option>
+          <option value="yes">树上仍挂果（晚熟杂柑 12–1 月采收）</option>
+          <option value="no">已采收完</option>
+        </select>
+      </label>
+      <span class="hint" id="fruit-tip"></span>
+    </div>
   </section>
 
   <section class="card" id="now-card">
@@ -43,9 +63,9 @@
   </section>
 
   <section class="card" id="timeline-card">
-    <h2>③ 近 90 天风险日历（含未来 7 天预报）</h2>
+    <h2>③ 风险日历（末 97 格，含未来预报；第 8 天起等级已封顶）</h2>
     <div id="timeline" class="timeline"></div>
-    <p class="hint">红/橙/黄/蓝 = 重/中/轻/关注；灰 = 无风险。鼠标悬停查看当日详情。</p>
+    <p class="hint">红/橙/黄/蓝 = 重/中/轻/关注；灰 = 无风险。这四色是本工具的等级配色，<b>不是气象灾害预警信号</b>，不与官方预警色挂钩。鼠标悬停查看当日详情。</p>
   </section>
 
   <section class="card" id="advice-card">
@@ -53,7 +73,7 @@
     <div id="advice" class="advice">加载中…</div>
     <div class="export-row">
       <button id="export-report" class="btn">⬇ 导出建议报告（HTML，可打印/另存 Word）</button>
-      <button id="export-csv" class="btn">⬇ 导出 97 天风险日历（CSV）</button>
+      <button id="export-csv" class="btn">⬇ 导出风险日历 CSV（本次取回的整段序列，天数见页面①）</button>
       <span class="hint">报告含当前物候、四类风险、建议与数据来源，可直接存档或与农技员沟通。</span>
     </div>
   </section>
@@ -82,7 +102,12 @@
         （仅保存在本机浏览器 localStorage，不回传服务器）。</p>
       <input id="api-key" type="password" placeholder="sk-...">
       <button id="save-key" class="btn">保存 Key</button>
+      <button id="use-key-once" class="btn" type="button">仅本次使用（不写入本机）</button>
       <span id="key-status"></span>
+      <button id="clear-key" class="btn" type="button">清除本机 Key</button>
+      <button id="clear-local" class="btn" type="button">清除本机全部记录（园块条件／确认清单）</button>
+      <p class="src"><b>共用手机/值班机请把 Key 只留在本次会话</b>：保存进 localStorage 的 Key 是明文、且<b>不会自动过期</b>，任何能打开这台设备浏览器的人都能读到并使用它刷你的 DeepSeek 额度；这类设备上请用「仅本次使用（不写入本机）」按钮，刷新页面即失效。多人各自用手机时各自填各自的 Key。</p>
+      <p class="src"><b>发送了什么、谁在处理</b>：勾选"用大模型解释"后提问时，本工具会把园块名与坐标、当日与近 7 天判级结果、建议清单发给 DeepSeek（用量按你的 Key 计费，请自行设额度）。DeepSeek《隐私政策》2026-02-10 版第 1.2 条写明"输入及对应输出"会经加密与去标识后用于模型训练与服务优化，并可在其产品内关闭"数据用于优化体验"退出；《开放平台服务协议》2026-04-22 版<b>未规定 API 场景的留存期限与删除流程</b>，所以本工具不替第三方承诺留存或删除。不接受上述条款请不要保存 Key——上面的确定性问答（ruleAnswer）不发送任何数据，看板与导出报告也不依赖大模型。</p>
     </details>
   </section>
 </main>
@@ -90,12 +115,15 @@
 <footer class="wrap foot">
   <p>丹橘知旱 · AI4Climate 全球青年气候解决方案挑战赛参赛项目 · 团队 沧浪舟 · 开放选题 / 气候适应与韧性</p>
   <p>数据来源：<a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo（ERA5-Land 再分析与 ECMWF 预报）</a> ·
+  <span class="src">气象数据按 <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a> 署名使用，底层来自 Copernicus Climate Change Service (ERA5-Land) 与 ECMWF；本产品为非商业展示用途。</span>
      规则来源：湖北省农业农村厅《湖北柑橘抗高温干旱及灾后恢复技术措施》等公开农技资料 ·
+     <a href="https://github.com/Pawnnwap/danju-zhihan" target="_blank" rel="noopener">代码仓库</a> ·
      <a href="https://deepseek.club/topic/5043" target="_blank" rel="noopener">社区作品帖</a> ·
      <a href="docs/01-项目说明.md" target="_blank" rel="noopener">项目文档</a></p>
+  <p id="ver">规则版本：以页面加载的 phenology.js 常量为准（见 app.js 写入本行）</p>
 </footer>
 
-<script src="phenology.js?v=10"></script>
-<script src="app.js?v=10"></script>
+<script src="phenology.js?v=15"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>

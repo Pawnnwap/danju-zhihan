@@ -1,0 +1,11 @@
+#!/bin/sh
+# 提交前闸门：六闸门 + 材料在同一份工作树上全绿才允许提交（评审 A-Q5 要求的机制）。
+# 激活方式（一次性，由仓库所有者执行；本文件不改 git 配置）：
+#   git config core.hooksPath .githooks
+# 绕过一次（不推荐，且 GATES.json 会停在旧 SHA 上）：git commit --no-verify
+set -e
+cd "$(git rev-parse --show-toplevel)"
+# Windows 控制台默认 GBK，闸门输出含替换字符时会让子脚本自己崩在 print 上
+PYTHONIOENCODING=utf-8 export PYTHONIOENCODING
+python tools/check_all.py --verify
+echo "[pre-commit] 六闸门全绿，允许提交"

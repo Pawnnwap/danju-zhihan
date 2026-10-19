@@ -1,5 +1,8 @@
-docs/frames/
+docs/frames/*.png
 __pycache__/
 *.pyc
 docs/04-同侪帖学习与改进.md
 pre/
+docs/frames/v2/
+tools/video/_vendor/
+tools/video/__pycache__/

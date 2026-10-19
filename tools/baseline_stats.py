@@ -41,8 +41,18 @@ EVAL_YEARS = range(2021, 2026)    # 留出评估段
 
 
 def percentiles(vals, qs):
+    """线性插值分位（与 numpy.percentile(..., method="linear") 同定义，评审 A-Q4）。
+
+    此前用下标法 v[int(q*n)]，第三方按 numpy 默认口径复算会对不上（开花期 p99 差 0.8mm），
+    而材料承诺"可由冻结序列现算"——承诺的必须是别人也能算出来的那个定义。
+    """
     v = sorted(vals)
-    return [v[min(len(v) - 1, int(q * len(v)))] for q in qs]
+    out = []
+    for q in qs:
+        pos = (len(v) - 1) * q
+        lo, hi = int(pos), min(int(pos) + 1, len(v) - 1)
+        out.append(v[lo] + (v[hi] - v[lo]) * (pos - lo))
+    return out
 
 
 def load():
@@ -146,6 +156,17 @@ def main() -> int:
                 continue
             parts.append(f"{lv} 中位 {st.median(per):.0f}（{min(per)}–{max(per)}）")
         print(f"  {RISK_LABEL[key]:8} " + "｜".join(parts))
+    # 1b) 留出段负担：干旱的蒸散口径阈值只用 2016–2020 定标，2021–2025 才是可引用的负担口径
+    print("  ── 1b) 干旱负担只取留出段 2021–2025（定标段 2016–2020 的分位命中是算术恒等式，不作证据）──")
+    for lv in ("轻", "中", "重"):
+        per = [sum(1 for d in assessed if d["drought_level"] == lv
+                   and date.fromisoformat(d["date"]).year == y) for y in EVAL_YEARS]
+        print(f"    {lv} 中位 {st.median(per):.0f}（{min(per)}–{max(per)}）")
+    # 佐证规则的不变量：降水口径未到"中"（连旱<15 且 雨30>30）的日子，不得出现"重"级
+    viol = [d["date"] for d in assessed if d["drought_level"] == "重" and d["pheno"] != "dormant"
+            and d.get("dry_streak", 0) < 15 and d.get("rain30", 0) > 30]
+    print(f"    佐证规则不变量（降水口径未达「中」却判「重」）违反天数：{len(viol)}"
+          + (f" → {viol[:5]}" if viol else "（应为 0）"))
 
     # —— 2) 休眠期降水口径常驻率（反事实） ——
     dor = [d for d in assessed if d["pheno"] == "dormant"]
@@ -153,25 +174,30 @@ def main() -> int:
     for d in assessed:
         if d.get("window_days", 0) < 30 or d.get("window_bad", 0):
             continue
-        dr, r = d["dry_streak"], d["rain30"]
-        if dr >= 25 or r <= 15:
-            cf[d["date"]] = "重"
-        elif dr >= 15 or r <= 30:
-            cf[d["date"]] = "中"
-        elif dr >= 8 or r <= 45:
-            cf[d["date"]] = "轻"
-    cnt = Counter(cf.get(d["date"]) for d in dor)
+        # 判级只有一处实现：backtest.rain_track（材料闸门也调它）——此前这里手抄了五个阈值字面量（评审 A-R10㉒）
+        lv = backtest.rain_track(d["dry_streak"], d["rain30"])
+        if lv:
+            cf[d["date"]] = lv
+    in_win = [d for d in dor if d.get("window_days", 0) >= 30 and not d.get("window_bad", 0)]
+    n_win = len(in_win)
+    hit_win = sum(1 for d in in_win if d["date"] in cf)
+    cnt = Counter(cf[d["date"]] for d in in_win if d["date"] in cf)
     any_lv = sum(1 for d in dor if d["date"] in cf)
-    print(f"\n=== 2) 休眠期反事实（n={len(dor)} 天）===")
-    print(f"  若降水口径照判：任一级 {any_lv}/{len(dor)} = {100 * any_lv / len(dor):.1f}%"
-          f"（轻 {100 * cnt['轻'] / len(dor):.1f}%、中 {100 * cnt['中'] / len(dor):.1f}%、"
-          f"重 {100 * cnt['重'] / len(dor):.1f}%）")
+    print(f"\n=== 2) 休眠期反事实（现行 AND 规则；n={len(dor)} 天，回看窗口完整 {n_win} 天）===")
+    print(f"  照判·窗口完整口径（对外引用这个数）：任一级 {hit_win}/{n_win} = {100 * hit_win / n_win:.1f}%"
+          f"（轻 {100 * cnt['轻'] / n_win:.1f}%、中 {100 * cnt['中'] / n_win:.1f}%、"
+          f"重 {100 * cnt['重'] / n_win:.1f}%）")
+    print(f"DORMANT_AND_PCT = {100 * hit_win / n_win:.1f}")
+    print(f"  照判·全休眠期口径（含回看不足日）：{any_lv}/{len(dor)} = {100 * any_lv / len(dor):.1f}%"
+          " ← 旧稿的 89.8% 是这个口径 **且**用了已退役的 OR 规则（连旱≥8 或 雨30≤45 即判轻）；"
+          "用退役规则给现行决策做定量辩护属口径错误，此处一并更正")
     print("  → 现行为：降水口径在休眠期沉默；蒸散口径仍出级（阈值取该期自身分位，样本内常驻率≈25%/10%/1%）。")
 
     # —— 3) def30 定标 + 留出 ——
-    th, dropped, _ = derive_thresholds(assessed, et30)                 # 全段定标（代码内使用的即此表）
-    th_calib, _, _ = derive_thresholds(assessed, et30, CALIB_YEARS)     # 只用 2016–20，供留出检验
-    print("\n=== 3) def30 蒸散亏缺口径（轻=p75／中=p90／重=p99）===")
+    th, dropped, _ = derive_thresholds(assessed, et30, CALIB_YEARS)      # 定标段：代码内使用的即此表
+    th_full, _, _ = derive_thresholds(assessed, et30)                    # 全段定标，仅作敏感性对照
+    th_calib = th
+    print("\n=== 3) def30 蒸散亏缺口径（定标段 2016–2020 的 p75/p90/p99；重级需降水佐证）===")
     print(f"  ET0 窗口不完整而退出定标/评估的天数：{dropped}（本 fixture 四变量均无缺测；29 天为序列起始的回看不足）")
     print(f"  {'物候期':10}{'2016-20定标阈值':>20}{'留出段占比 轻/中/重':>22}{'留出段重级天/年':>18}")
     for pid in PHENO_IDS:
@@ -214,7 +240,7 @@ def main() -> int:
           "故 def30 是\"降水亏缺扣掉蒸散需求\"的合成排名量，不等同作物缺水强度；"
           "其增量信息集中在高 ET0 少雨过程（如 2022-08），这正是它相对纯降水口径的实际增益。")
 
-    print("\n  3d) 全段（2016–2025）定标阈值 = 代码内 DEF_THRESH（单一事实源）")
+    print("\n  3d) 定标段（2016–2020）阈值 = 代码内 DEF_THRESH（单一事实源）")
     for pid in PHENO_IDS:
         if pid in th:
             print("    {:10} 轻 {:6.1f} / 中 {:6.1f} / 重 {:6.1f}".format(
@@ -230,6 +256,9 @@ def main() -> int:
         print("    [X] 阈值与代码脱钩：\n      " + "\n      ".join(bad))
         return 1
     print("    [OK] 现算分位与 phenology.js / backtest.py 的 DEF_THRESH 一致（±0.05）")
+    print("    对照（全段 2016–2025 定标，若改用它会与留出评估互相污染）："
+          + " ".join(f"{PHENO_LABEL[pid]} {th_full[pid]['轻']}/{th_full[pid]['中']}/{th_full[pid]['重']}"
+                     for pid in PHENO_IDS if pid in th_full))
 
     print("\n=== 4) 2022-08-24~28 实况（蒸散口径的增量证据）===")
     for d in assessed:
@@ -237,11 +266,11 @@ def main() -> int:
             e = et30.get(d["date"])
             def30 = None if e is None else e - d["rain30"]
             dv = def_level(def30, th["swell"]) if def30 is not None and "swell" in th else None
-            print("    {} 连旱{:2}天 雨30={:5.1f} def30={:6.1f}｜现行等级 {}（蒸散口径单独看会判 {}）".format(
+            print("    {} 连旱{:2}天 雨30={:5.1f} def30={:6.1f}｜现行等级 {}（蒸散分位原始判 {}，佐证规则可能降格）".format(
                 d["date"], d["dry_streak"], d["rain30"], def30, d["drought_level"] or "无", dv or "无"))
     print("    → 同一周（2022-08-27 中国气象局在丹江口汇水流域飞机增雨，公开报道），"
-          "纯降水口径最高只判到『中』；08-24~27 蒸散口径判『重』（08-28 判『中』）——"
-          "把这段抬上去的正是新分支，可逐日复算。")
+          "纯降水口径最高只判到『中』；蒸散分位把 08-24~27 抬到『重』级线以上——"
+          "现行规则要求降水口径同时到『中』才放行『重』，可逐日复算实际出的是哪一级。")
     return 0
 
 
