@@ -752,8 +752,8 @@ class Scenes:
 
         pp = span(t, 0.75, 1.35)
         if pp > 0:
-            ph, php = shadowed(phone(self.mobile_now, width=300), blur=30, dy=18, alpha=85)
-            paste(im, ph, (1290 - php - (1 - pp) * 22, 300 - php - (1 - pp) * 16), pp)
+            ph, php = shadowed(phone(self.mobile_now, width=258), blur=28, dy=16, alpha=85)
+            paste(im, ph, (1480 - php - (1 - pp) * 22, 286 - php - (1 - pp) * 16), pp)
 
         chips = ["可打印 / Word", "Markdown 报告", "风险日历 CSV（97 天）", "无需安装 · 无需注册"]
         cx = 120
@@ -798,10 +798,10 @@ class Scenes:
 
         pp = span(t, 0.9, 1.5)
         if pp > 0:
-            card, pad = self._build_card(self.ui_replay, 1100, 14)
-            paste(im, card, (1180 - pad - (1 - pp) * 18, 306 - pad - (1 - pp) * 14), pp)
+            card, pad = self._build_card(self.ui_replay, 1040, 14)
+            paste(im, card, (790 - pad - (1 - pp) * 18, 306 - pad - (1 - pp) * 14), pp)
             d = ImageDraw.Draw(im)
-            d.text((1180, 268), "2022 年夏季热害回放（产品实拍）", font=font("bold", 21), fill=GREY)
+            d.text((790, 268), "2022 年夏季热害回放（产品实拍）", font=font("bold", 21), fill=GREY)
         self.caption_note(im, "回放与首页同源：输入序列冻结在 tools/fixtures/，换机器结果一致。",
                           905, color=(128, 138, 128), t=t, t0=1.8, size=19)
         return im
