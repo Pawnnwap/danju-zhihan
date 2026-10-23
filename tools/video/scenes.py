@@ -480,7 +480,7 @@ class Scenes:
 
     def s_product(self, t, dur):
         im = self.bg_paper.copy()
-        self.kicker(im, "03", "产品", t=t, t0=0.05)
+        self.kicker(im, "04", "产品", t=t, t0=0.05)
         self.headline(im, "手机打开即用，一屏看完风险", y=142, size=56, t=t, t0=0.15)
 
         P = self.product
@@ -537,7 +537,7 @@ class Scenes:
 
     def s_evidence(self, t, dur):
         im = self.bg_paper.copy()
-        self.kicker(im, "04", "证据", t=t, t0=0.05)
+        self.kicker(im, "07", "证据", t=t, t0=0.05)
         self.headline(im, "2022 年真实数据，逐日复算", y=140, size=54, t=t, t0=0.15)
 
         metrics = [("30", "天", "≥35℃ 高温日", INK), ("13", "天", "热害「重」级", (192, 57, 43)),
@@ -606,7 +606,7 @@ class Scenes:
 
     def s_ai(self, t, dur):
         im = self.bg_paper.copy()
-        self.kicker(im, "05", "AI 分工", t=t, t0=0.05)
+        self.kicker(im, "08", "AI 分工", t=t, t0=0.05)
         self.headline(im, "算，交给规则；说，交给模型", y=140, size=56, t=t, t0=0.15)
 
         pp = span(t, 0.35, 1.0)
@@ -646,7 +646,7 @@ class Scenes:
 
     def s_verify(self, t, dur):
         im = self.bg_paper.copy()
-        self.kicker(im, "06", "可信", t=t, t0=0.05)
+        self.kicker(im, "09", "可信", t=t, t0=0.05)
         self.headline(im, "六道闸门，全绿才记录", y=140, size=56, t=t, t0=0.15)
         self.caption_note(im, "python tools/check_all.py —— 六道闸门依次跑，任一失败即退出 1，不覆盖上一次成功记录。",
                           250, t=t, t0=0.4, size=22)
@@ -687,6 +687,217 @@ class Scenes:
 
         self.caption_note(im, "代码 MIT 开源，输入序列冻结在 tools/fixtures/ 内，不联网也能复算。",
                           905, color=(128, 138, 128), t=t, t0=2.1, size=19)
+        return im
+
+
+    # -- 03 引擎 ---------------------------------------------------
+    def s_engine(self, t, dur):
+        im = self.bg_paper.copy()
+        self.kicker(im, "03", "引擎", t=t, t0=0.05)
+        self.headline(im, "阈值全部写在代码里", y=146, size=58, t=t, t0=0.15)
+        self.caption_note(im, "判级不靠模型感觉，每一条都能在仓库里找到出处。", 252, t=t, t0=0.45, size=24)
+
+        rows = [("高温热害", RISK["heavy"], ["35℃ / 37℃ / 39℃ 三级分级", "连续 ≥35℃ 满 3 天升「中」、满 5 天升「重」"]),
+                ("干旱", RISK["mid"], ["降水型：连续无有效降水日 25 / 15 / 8 天", "或 30 天累计 ≤15 / 30mm"]),
+                ("花期 · 幼果低温", RISK["watch"], ["开花期 ≤2 / 5 / 8℃ 三档", "只在开花与幼果期触发"]),
+                ("越冬冻害", (60, 110, 170), ["休眠期 ≤-3 / -5 / -7℃", "附「距降温 N 天」时效钟"])]
+        y = 336
+        for i, (name, col, lines) in enumerate(rows):
+            pp = span(t, 0.5 + i * 0.15, 1.0 + i * 0.15)
+            if pp <= 0:
+                continue
+            d = ImageDraw.Draw(im)
+            d.line([120, y - 16, 1080, y - 16], fill=(224, 221, 210), width=1)
+            d.ellipse([120, y + 14, 136, y + 30], fill=col)
+            d.text((154, y), name, font=font("bold", 27), fill=INK)
+            for j, line in enumerate(lines):
+                d.text((154, y + 46 + j * 34), line, font=font("reg", 21), fill=(84, 98, 88))
+            y += 132
+
+        # 右侧：干旱双口径
+        pp = span(t, 1.15, 1.75)
+        if pp > 0:
+            box = rrect((600, 486), 16, (255, 255, 255, 255), border=(214, 211, 200, 255), width=1,
+                        shadow=(0, 10, 18))
+            paste(im, box, (1200, 330 - (1 - pp) * 14), pp)
+            d = ImageDraw.Draw(im)
+            d.text((1240, 356), "干旱：两套口径，取更重的那套", font=font("bold", 22), fill=GREEN)
+            cols = [("降水型", GREEN, ["连续无有效降水日", "25 / 15 / 8 天三级", "30 天累计 ≤15 / 30mm"]),
+                    ("蒸散型 def30", (150, 100, 40), ["30 天 ET0 − 降水", "阈值按物候期分位定标", "定标段 2016–2020"])]
+            for i, (name, col, lines) in enumerate(cols):
+                x = 1240 + i * 268
+                d.rounded_rectangle([x, 398, x + 244, 570], 12, fill=(250, 249, 244), outline=col, width=2)
+                d.text((x + 16, 416), name, font=font("bold", 21), fill=col)
+                for j, line in enumerate(lines):
+                    d.text((x + 16, 452 + j * 34), line, font=font("reg", 19), fill=(84, 98, 88))
+            d.text((1240, 592), "蒸散口径单独最高只到「中」；出「重」须降水口径达「中」作绝对水量佐证。",
+                   font=font("reg", 19), fill=(120, 96, 40))
+            d.text((1240, 626), "2021–2025 整段留出，不参与定标。", font=font("reg", 19), fill=(108, 120, 110))
+            d.text((1240, 668), "回看窗口不满 30 天或含缺测日 → 不判级，写进回答，不猜。",
+                   font=font("bold", 19), fill=GREEN)
+        return im
+
+    # -- 05 落地 ---------------------------------------------------
+    def s_export(self, t, dur):
+        im = self.bg_paper.copy()
+        self.kicker(im, "05", "落地", t=t, t0=0.05)
+        self.headline(im, "建议能带走，不锁在屏幕里", y=146, size=56, t=t, t0=0.15)
+
+        pp = span(t, 0.4, 1.05)
+        if pp > 0:
+            card, pad = self._build_card(self.ui_advice, 900, 14)
+            paste(im, card, (120 - pad - (1 - pp) * 18, 306 - pad - (1 - pp) * 14), pp)
+            d = ImageDraw.Draw(im)
+            d.text((120, 268), "农事建议：分条给出，附执行时效与规则来源", font=font("bold", 21), fill=GREY)
+
+        pp = span(t, 0.75, 1.35)
+        if pp > 0:
+            ph, php = shadowed(phone(self.mobile_now, width=300), blur=30, dy=18, alpha=85)
+            paste(im, ph, (1290 - php - (1 - pp) * 22, 300 - php - (1 - pp) * 16), pp)
+
+        chips = ["可打印 / Word", "Markdown 报告", "风险日历 CSV（97 天）", "无需安装 · 无需注册"]
+        cx = 120
+        for i, txt in enumerate(chips):
+            pp = span(t, 1.0 + i * 0.14, 1.5 + i * 0.14)
+            if pp <= 0:
+                continue
+            f = font("bold", 22)
+            w = f.getlength(txt) + 44
+            box = Image.new("RGBA", (int(w), 46), (0, 0, 0, 0))
+            dd = ImageDraw.Draw(box)
+            dd.rounded_rectangle([0, 0, w - 1, 45], 23, fill=(255, 255, 255, 235), outline=(210, 224, 208, 255), width=2)
+            dd.text((22, 23), txt, font=f, fill=GREEN, anchor="lm")
+            paste(im, box, (cx, 900 - (1 - pp) * 10), pp)
+            cx += w + 16
+        # 角标放在建议卡与手机之间的空隙（1055px 起），不压画面
+        self.caption_note(im, "报告与 CSV 均本地生成", 902, color=GREY,
+                          t=t, t0=1.6, size=19, x=1072)
+        return im
+
+    # -- 06 回放 ---------------------------------------------------
+    def s_replay(self, t, dur):
+        im = self.bg_paper.copy()
+        self.kicker(im, "06", "回放", t=t, t0=0.05)
+        self.headline(im, "三个回放场景，现场就能点开", y=146, size=54, t=t, t0=0.15)
+
+        scenes_ = [("2022 · 夏季热害", RISK["heavy"], "凉水河格点 ≥35℃ 30 天、热害重级 13 天；首个重级 08-04，比 40.9℃ 峰值早 3 天"),
+                   ("2025 · 秋汛", RISK["watch"], "汉江 64 年来最密集秋汛、7 次编号洪水；回放给出降水统计与事件回顾"),
+                   ("2021 · 冬寒潮", (60, 110, 170), "越冬冻害判级与「距降温 N 天」时效钟的现场演示")]
+        for i, (name, col, desc) in enumerate(scenes_):
+            pp = span(t, 0.5 + i * 0.22, 1.05 + i * 0.22)
+            if pp <= 0:
+                continue
+            y = 330 + i * 200
+            box = rrect((620, 172), 14, (255, 255, 255, 255), border=(222, 219, 208, 255), width=1)
+            paste(im, box, (120, y - (1 - pp) * 14), pp)
+            d = ImageDraw.Draw(im)
+            d.rectangle([120, y, 124, y + 172 - (1 - pp) * 14], fill=col)
+            d.text((152, y + 26), name, font=font("bold", 25), fill=INK)
+            for j, line in enumerate(wrap(desc, "reg", 20, 540)[:3]):
+                d.text((152, y + 74 + j * 30), line, font=font("reg", 20), fill=(84, 98, 88))
+
+        pp = span(t, 0.9, 1.5)
+        if pp > 0:
+            card, pad = self._build_card(self.ui_replay, 1100, 14)
+            paste(im, card, (1180 - pad - (1 - pp) * 18, 306 - pad - (1 - pp) * 14), pp)
+            d = ImageDraw.Draw(im)
+            d.text((1180, 268), "2022 年夏季热害回放（产品实拍）", font=font("bold", 21), fill=GREY)
+        self.caption_note(im, "回放与首页同源：输入序列冻结在 tools/fixtures/，换机器结果一致。",
+                          905, color=(128, 138, 128), t=t, t0=1.8, size=19)
+        return im
+
+    # -- 08 试点 ---------------------------------------------------
+    def s_pilot(self, t, dur):
+        im = self.bg_paper.copy()
+        self.kicker(im, "08", "试点", t=t, t0=0.05)
+        self.headline(im, "90 天小范围试点，判据先写死", y=146, size=54, t=t, t0=0.15)
+        self.caption_note(im, "与库区 1—2 家合作社 / 乡镇农技站试用，先签一页纸《试用与责任约定》。",
+                          250, t=t, t0=0.4, size=22)
+
+        tiles = [("≥19 / 26", "户·周", "周活跃（每周登录并查看）"),
+                 ("≥5 / 10", "条", "中重级提示的采纳率"),
+                 ("≥4", "分", "满意度户均（5 分制）"),
+                 ("n < 10", "只报", "分子分母，不做比例宣传")]
+        for i, (num, unit, label) in enumerate(tiles):
+            pp = span(t, 0.5 + i * 0.16, 1.05 + i * 0.16)
+            if pp <= 0:
+                continue
+            x = 120 + (i % 2) * 560
+            y = 336 + (i // 2) * 190
+            box = rrect((520, 160), 14, (255, 255, 255, 255), border=(222, 219, 208, 255), width=1)
+            paste(im, box, (x, y - (1 - pp) * 14), pp)
+            d = ImageDraw.Draw(im)
+            col = GREEN if i < 2 else (150, 100, 40)
+            pre = "≥" if num.startswith("≥") else ""
+            if pre:
+                d.text((x + 28, y + 66), pre, font=font("bold", 46), fill=col)
+            d.text((x + 28 + (font("bold", 46).getlength(pre) + 8 if pre else 0), y + 40),
+                   num[len(pre):], font=font("num", 56), fill=col)
+            d.text((x + 28, y + 108), unit, font=font("bold", 20), fill=GREY)
+            d.text((x + 28, y + 130), label, font=font("reg", 20), fill=(84, 98, 88))
+
+        # 90 天节奏
+        pp = span(t, 1.2, 1.8)
+        if pp > 0:
+            d = ImageDraw.Draw(im)
+            d.text((1240, 336), "90 天节奏", font=font("bold", 22), fill=GREEN)
+            phases = [("第 1–2 周", "签约 · 装园块 · 记基线"), ("第 3–10 周", "试用 · 周报 · 阈值校准"), ("第 11–13 周", "回访 · 复盘 · 出报告")]
+            for i, (rng, what) in enumerate(phases):
+                y = 386 + i * 96
+                d.line([1240, y + 34, 1240 + 480 * ease_out(pp), y + 34], fill=(214, 211, 200), width=2)
+                d.ellipse([1240, y + 26, 1252, y + 38], fill=AMBER)
+                d.text((1272, y + 12), rng, font=font("bold", 20), fill=INK)
+                d.text((1272, y + 44), what, font=font("reg", 19), fill=(84, 98, 88))
+            box = rrect((520, 96), 12, (255, 244, 228, 255), border=(240, 200, 150, 255), width=1)
+            paste(im, box, (1240, 690 - (1 - pp) * 10), pp)
+            d.text((1266, 712), "判失败（事先写死）：周活跃 ≤14/26、或任一户", font=font("reg", 18), fill=(150, 92, 28))
+            d.text((1266, 740), "全程未打开 → 判未达核心目标。", font=font("reg", 18), fill=(150, 92, 28))
+
+        self.caption_note(im, "现金封顶 3400 元（无法合规列支自动降 2200）、工时 85–95 小时，均写有超支砍序与退出触发。",
+                          905, color=(128, 138, 128), t=t, t0=1.9, size=19)
+        return im
+
+    # -- 09 边界 ---------------------------------------------------
+    def s_safety(self, t, dur):
+        im = self.bg_paper.copy()
+        self.kicker(im, "09", "边界", t=t, t0=0.05)
+        self.headline(im, "不确定性写在前头", y=146, size=58, t=t, t0=0.15)
+
+        pp = span(t, 0.45, 1.0)
+        if pp > 0:
+            k = ease_out(clamp((t - 0.45) / 0.9))
+            val = "%.1f" % (44.3 * k)
+            layer = text_img(val, "num", 128, AMBER)
+            paste(im, layer, (120, 330 - (1 - pp) * 18), pp)
+            wn = font("num", 128).getlength(val)
+            paste(im, text_img("%", "bold", 72, AMBER), (120 + wn + 6, 386 - (1 - pp) * 18), pp)
+            d = ImageDraw.Draw(im)
+            d.text((120, 500), "同一坐标取 4 个互不相同的格点，", font=font("reg", 24), fill=(70, 84, 74))
+            d.text((120, 540), "2022 年 122 天里有 54 天，四类风险的", font=font("reg", 24), fill=(70, 84, 74))
+            d.text((120, 580), "最高等级不一致（格点敏感性实测）。", font=font("reg", 24), fill=(70, 84, 74))
+            d.text((120, 646), "测试脚本已入库，可自行复算。", font=font("reg", 21), fill=GREY)
+
+        notes = ["7 天预报的误差随天数增大，中级及以下仅供参考",
+                 "ERA5-Land 是约 9km 格点再分析，与单园实测存在偏差",
+                 "输入序列冻结、代码开源，判级可离线复算"]
+        for i, line in enumerate(notes):
+            pp = span(t, 0.9 + i * 0.2, 1.4 + i * 0.2)
+            if pp <= 0:
+                continue
+            d = ImageDraw.Draw(im)
+            y = 340 + i * 108
+            d.line([1180, y - 16, 1800, y - 16], fill=(224, 221, 210), width=1)
+            d.text((1180, y), "·  " + line, font=font("reg", 23), fill=(70, 84, 74))
+
+        pp = span(t, 1.5, 2.1)
+        if pp > 0:
+            box = rrect((1560, 150), 14, (236, 243, 234, 255), border=(210, 224, 208, 255), width=1)
+            paste(im, box, (120, 740 - (1 - pp) * 12), pp)
+            d = ImageDraw.Draw(im)
+            d.text((152, 770), "风险等级用于辅助安排农事，不构成灾害预警，不替代官方气象预警与专业农技指导。",
+                   font=font("bold", 23), fill=GREEN)
+            d.text((152, 812), "数据：Open-Meteo（ERA5-Land / ECMWF，CC BY 4.0） · 规则来源：湖北省农业农村厅等公开农技资料",
+                   font=font("reg", 20), fill=(96, 108, 98))
         return im
 
     # -- 08 尾卡 ---------------------------------------------------
@@ -753,9 +964,14 @@ PREVIEW = {
     "title": (Scenes.s_title, 6.0),
     "problem": (Scenes.s_problem, 13.0),
     "solution": (Scenes.s_solution, 12.0),
+    "engine": (Scenes.s_engine, 16.0),
     "product": (Scenes.s_product, 12.0),
+    "export": (Scenes.s_export, 13.5),
+    "replay": (Scenes.s_replay, 17.0),
     "evidence": (Scenes.s_evidence, 12.5),
     "ai": (Scenes.s_ai, 10.5),
     "verify": (Scenes.s_verify, 12.5),
+    "pilot": (Scenes.s_pilot, 16.0),
+    "safety": (Scenes.s_safety, 14.0),
     "end": (Scenes.s_end, 5.0),
 }

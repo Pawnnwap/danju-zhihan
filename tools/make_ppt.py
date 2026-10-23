@@ -138,7 +138,7 @@ for run in ctf.paragraphs[0].runs:
     run.font.size = Pt(17); run.font.bold = True; run.font.color.rgb = GREEN
 for line in ["无安装、无账号、无后端",
              "园块条件与确认记录只存本机",
-             "85 秒演示视频：1080p，配音＋字幕",
+             "175 秒演示视频：1080p，配音＋字幕",
              "在线体验见 02 页链接"]:
     p = ctf.add_paragraph(); p.text = "·  " + line
     for run in p.runs:

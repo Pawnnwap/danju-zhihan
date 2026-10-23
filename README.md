@@ -85,7 +85,7 @@ python tools/make_video.py --still problem 6.5   # 只出一帧，调版式用
 - [数据与 AI 说明](docs/02-数据与AI说明.md)
 - [验证计划](docs/03-验证计划.md)
 - [试点周历与台账](docs/04-试点周历与台账.md)
-- [演示视频（85 秒，1080p，中文配音＋烧录字幕）](https://pawnnwap.github.io/danju-zhihan/docs/demo-video.mp4)｜[仓库内文件](docs/demo-video.mp4)
+- [演示视频（175 秒，1080p，中文配音＋烧录字幕）](https://pawnnwap.github.io/danju-zhihan/docs/demo-video.mp4)｜[仓库内文件](docs/demo-video.mp4)
 
 > `tools/GATES.json` 是**本地一键复算的记录文件**（记 `commit` 短号与工作树是否干净）；其中的 commit 指运行那一刻的本地工作副本，不一定对应远端提交。评委复现请直接运行 `python tools/check_all.py`，跑完会重写该文件。
 - [参赛 PPT](丹橘知旱-参赛PPT.pptx)
