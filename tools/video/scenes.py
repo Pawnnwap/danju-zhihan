@@ -164,8 +164,8 @@ class Scenes:
         self.mark76 = self._mark(76)
         self.chart_full = self._build_chart(900, 546)
         self.product = self._build_product()
-        self.evidence_card = self._build_card(self.ui_replay.crop((30, 380, 1830, 712)), 1100, 12)
-        self.qa_card = self._build_card(self.ui_qa.crop((0, 30, 1840, 655)), 1080, 12)
+        self.evidence_card = self._build_card(self.ui_replay.crop((30, 380, 2072, 712)), 1100, 12)
+        self.qa_card = self._build_card(self.ui_qa.crop((0, 30, 2072, 655)), 1080, 12)
         # 真机录屏（tools/record_live.py 产出），有就替掉产品幕的静态截图
         self.live_frames = sorted(glob.glob(str(Path(tempfile.gettempdir()) / "livecap" / "frames" / "*.jpg")))
 
@@ -563,7 +563,7 @@ class Scenes:
             card, pad = self.evidence_card
             paste(im, card, (120 - pad - (1 - pp) * 18, 500 - pad - (1 - pp) * 14), pp)
             d = ImageDraw.Draw(im)
-            d.text((120, 468), "回放输出的逐日判级依据（产品实拍）", font=font("bold", 21), fill=GREY)
+            d.text((120, 468 - (1 - pp) * 14), "回放输出的逐日判级依据（产品实拍）", font=font("bold", 21), fill=GREY)
 
         # 右侧：3 天示意
         pp = span(t, 1.5, 2.1)
@@ -614,7 +614,7 @@ class Scenes:
             card, pad = self.qa_card
             paste(im, card, (120 - pad - (1 - pp) * 18, 296 - pad - (1 - pp) * 14), pp)
             d = ImageDraw.Draw(im)
-            d.text((120, 264), "问答助手 · 内置规则引擎回答（不需要 Key）", font=font("bold", 21), fill=GREY)
+            d.text((120, 264 - (1 - pp) * 14), "问答助手 · 内置规则引擎回答（不需要 Key）", font=font("bold", 21), fill=GREY)
             d.text((120, 700), "回答自带数据日期与规则来源；不接入大模型也能用。", font=font("reg", 21), fill=GREY)
 
         blocks = [("确定性引擎", ["公开气象数据 → 物候规则表 → 分级阈值",
@@ -717,9 +717,10 @@ class Scenes:
         # 右侧：干旱双口径
         pp = span(t, 1.15, 1.75)
         if pp > 0:
+            pad = 54  # rrect 投影 blur=18 → pad = blur*3，贴图时要扣掉才落在预期位置
             box = rrect((600, 486), 16, (255, 255, 255, 255), border=(214, 211, 200, 255), width=1,
                         shadow=(0, 10, 18))
-            paste(im, box, (1200, 330 - (1 - pp) * 14), pp)
+            paste(im, box, (1200 - pad, 330 - pad - (1 - pp) * 14), pp)
             d = ImageDraw.Draw(im)
             d.text((1240, 356), "干旱：两套口径，取更重的那套", font=font("bold", 22), fill=GREEN)
             cols = [("降水型", GREEN, ["连续无有效降水日", "25 / 15 / 8 天三级", "30 天累计 ≤15 / 30mm"]),
@@ -730,11 +731,11 @@ class Scenes:
                 d.text((x + 16, 416), name, font=font("bold", 21), fill=col)
                 for j, line in enumerate(lines):
                     d.text((x + 16, 452 + j * 34), line, font=font("reg", 19), fill=(84, 98, 88))
-            d.text((1240, 592), "蒸散口径单独最高只到「中」；出「重」须降水口径达「中」作绝对水量佐证。",
-                   font=font("reg", 19), fill=(120, 96, 40))
-            d.text((1240, 626), "2021–2025 整段留出，不参与定标。", font=font("reg", 19), fill=(108, 120, 110))
-            d.text((1240, 668), "回看窗口不满 30 天或含缺测日 → 不判级，写进回答，不猜。",
-                   font=font("bold", 19), fill=GREEN)
+            # 注释卡内共 4 行：宽度上限 520（卡 1200–1800，左右各留 40），长句必须拆行
+            d.text((1240, 596), "蒸散口径单独最高只到「中」；", font=font("reg", 19), fill=(120, 96, 40))
+            d.text((1240, 628), "出「重」须降水口径达「中」作绝对水量佐证。", font=font("reg", 19), fill=(120, 96, 40))
+            d.text((1240, 666), "2021–2025 整段留出，不参与定标。", font=font("reg", 19), fill=(108, 120, 110))
+            d.text((1240, 710), "回看窗口不满 30 天或含缺测日 → 不判级。", font=font("bold", 19), fill=GREEN)
         return im
 
     # -- 05 落地 ---------------------------------------------------
@@ -771,7 +772,7 @@ class Scenes:
             cx += w + 16
         # 角标放在建议卡与手机之间的空隙（1055px 起），不压画面
         self.caption_note(im, "报告与 CSV 均本地生成", 902, color=GREY,
-                          t=t, t0=1.6, size=19, x=1072)
+                          t=t, t0=1.6, size=19, x=1128)
         return im
 
     # -- 06 回放 ---------------------------------------------------
@@ -827,14 +828,17 @@ class Scenes:
             box = rrect((520, 160), 14, (255, 255, 255, 255), border=(222, 219, 208, 255), width=1)
             paste(im, box, (x, y - (1 - pp) * 14), pp)
             d = ImageDraw.Draw(im)
+            dy = (1 - pp) * 14          # 字与卡片同动，避免滑入时字戳出卡外
             col = GREEN if i < 2 else (150, 100, 40)
             pre = "≥" if num.startswith("≥") else ""
+            ymid = y + 66 - dy          # 数字与 ≥ 共用中线（lm 锚点），避免 ≥ 掉到下一行
+            px = x + 28
             if pre:
-                d.text((x + 28, y + 66), pre, font=font("bold", 46), fill=col)
-            d.text((x + 28 + (font("bold", 46).getlength(pre) + 8 if pre else 0), y + 40),
-                   num[len(pre):], font=font("num", 56), fill=col)
-            d.text((x + 28, y + 108), unit, font=font("bold", 20), fill=GREY)
-            d.text((x + 28, y + 130), label, font=font("reg", 20), fill=(84, 98, 88))
+                d.text((px, ymid), pre, font=font("bold", 52), fill=col, anchor="lm")
+                px += font("bold", 52).getlength(pre) + 8
+            d.text((px, ymid), num[len(pre):], font=font("num", 56), fill=col, anchor="lm")
+            d.text((x + 28, y + 108 - dy), unit, font=font("bold", 20), fill=GREY)
+            d.text((x + 28, y + 130 - dy), label, font=font("reg", 20), fill=(84, 98, 88))
 
         # 90 天节奏
         pp = span(t, 1.2, 1.8)
