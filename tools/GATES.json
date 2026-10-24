@@ -1,5 +1,5 @@
 {
-  "ran_at_utc": "2026-10-23T22:41:36Z",
+  "ran_at_utc": "2026-10-24T01:07:40Z",
   "commit": "2bfc652",
   "branch": "main",
   "working_tree_dirty": true,
@@ -51,5 +51,6 @@
       "declared2": null
     }
   },
-  "all_green": true
+  "all_green": true,
+  "previous_green_run": "2026-10-23T22:41:36Z"
 }
